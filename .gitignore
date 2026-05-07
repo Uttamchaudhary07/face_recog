@@ -1,0 +1,17 @@
+node_modules
+.env
+.env.*
+.DS_Store
+frontend/dist
+frontend/.vite
+backend/node_modules
+frontend/node_modules
+.vscode/
+.idea/
+*.log
+*.rar
+*.zip
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
