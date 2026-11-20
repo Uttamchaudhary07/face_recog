@@ -4,8 +4,7 @@ const IST = 'Asia/Kolkata'
  * Returns current date and time in IST.
  * Uses Intl API so it works correctly on any server timezone.
  */
-export function nowIST() {
-  const now = new Date()
+export function nowIST(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: IST,
     year: 'numeric', month: '2-digit', day: '2-digit',

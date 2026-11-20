@@ -1,3 +1,4 @@
+import AttendanceReports from '../components/AttendanceReports.jsx'
 import React, { useEffect, useMemo, useState } from 'react'
 import { getLogs, getMyStudents, resetFaceEnrollment } from '../api'
 import FaceEnrollModal from '../components/FaceEnrollModal.jsx'
@@ -129,6 +130,7 @@ export default function TeacherDashboard(){
       </div>
 
       {/* ── Assigned Students ── */}
+      <AttendanceReports faculty />
       <div className="card">
         <h3>My Students</h3>
         {students.length === 0

@@ -1,52 +1,30 @@
-# MySQL Deployment Guide
+# Deploy to Vercel
 
-## Step 1: Create MySQL Database in aaPanel
+Create two Vercel projects from this repository. Use Node.js 24 and set each project's Root Directory separately.
 
-1. Go to **Databases** → **MySQL** tab
-2. Click **Add Database**
-3. Fill in:
-   - **Database name**: `face_recog`
-   - **Username**: `face_recog`
-   - **Password**: `FaceRecog@MySQL2026`
-   - **Access**: Localhost
-4. Click **Submit**
+| Project | Root Directory | Framework | Build |
+| --- | --- | --- | --- |
+| Backend | `backend` | Express | Vercel detects `src/index.js` |
+| Frontend | `frontend` | Vite | `npm run build`, output `dist` |
 
-## Step 2: Upload Files to Server
+## Prepare MySQL
 
-Upload the entire updated backend folder to:
-`/www/wwwroot/sagarjaiswal.dev/facerecognition/backend/`
+Use a hosted MySQL database reachable from the backend project. Configure a deployment connection with TLS enabled and trusted certificates. Keep Preview and Production on separate databases when both are in use.
 
-## Step 3: Install Dependencies
+- Set `DB_HOST`, `DB_PORT` (defaults to 3306), `DB_NAME`, `DB_USER`, `DB_PASSWORD`, and `DB_SSL=true`. When the provider requires a CA certificate, set `DB_SSL_CA` to its PEM value.
+- Set a random `JWT_SECRET` and a separate `BIOMETRIC_ENCRYPTION_KEY`. Generate each with `openssl rand -hex 32`. Keep the biometric key stable and backed up.
+- Set `CORS_ORIGINS` to the exact frontend origin. Use comma-separated origins if testing multiple custom URLs.
+- Set `CRON_SECRET` to a random value for the production template cleanup. Optional settings are `ATTENDANCE_TARGET_PERCENT` and `BIOMETRIC_RETENTION_DAYS`.
 
-```bash
-cd /www/wwwroot/sagarjaiswal.dev/facerecognition/backend
-npm install
+With those variables set in a trusted shell, set `ADMIN_EMAIL` and `ADMIN_PASSWORD` there and initialize the database once from `backend`:
+
+```sh
+npm ci
+NODE_ENV=production npm run db:prepare
 ```
 
-## Step 4: Restart Backend
+Provisioning creates the schema and initial admin, and migrates existing templates if upgrading a populated database. A fresh preview should use test accounts and test data. Keep the admin password in your password manager.
 
-```bash
-pm2 restart face-recog-backend
-pm2 logs face-recog-backend --lines 20
-```
+## Deploy and verify
 
-## Step 5: Verify
-
-Test the API:
-```bash
-curl https://facerecognition.sagarjaiswal.dev/api/health
-```
-
-## Database Will Auto-Create Tables
-
-Sequelize will automatically create the tables when the backend starts:
-- `users` table
-- `attendances` table
-
-The admin user will be created automatically on first run.
-
-## View Database
-
-Use phpMyAdmin or Adminer (MySQL mode) to view your data:
-- Database: `face_recog`
-- Tables: `users`, `attendances`
+Deploy the Express project and check `/api/health`. Set the frontend's `VITE_API_ROOT` to the backend HTTPS URL ending in `/api` before building it. Refresh `/login` and verify that a staff account can sign in, use the kiosk, and see reports. Production kiosk submissions require a teacher or admin session. Verify biometrics and alerts with test data before using real student records.

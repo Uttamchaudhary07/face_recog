@@ -1,5 +1,13 @@
-import { DataTypes, Op } from 'sequelize'
+import { DataTypes, UniqueConstraintError } from 'sequelize'
 import { sequelize } from '../db.js'
+
+export function normalizeUsn(value){
+  return typeof value === 'string' ? value.trim().toUpperCase() || null : null
+}
+
+export function isDuplicateUsn(error){
+  return error instanceof UniqueConstraintError && Object.hasOwn(error.fields, 'userId')
+}
 
 export const User = sequelize.define('User', {
   id: {
@@ -27,6 +35,21 @@ export const User = sequelize.define('User', {
   userId: {
     type: DataTypes.STRING(50),
     unique: true,
+    allowNull: true,
+    set(value) {
+      this.setDataValue('userId', normalizeUsn(value))
+    }
+  },
+  department: {
+    type: DataTypes.STRING(100),
+    allowNull: true
+  },
+  semester: {
+    type: DataTypes.TINYINT.UNSIGNED,
+    allowNull: true
+  },
+  section: {
+    type: DataTypes.STRING(30),
     allowNull: true
   },
   barcode: {
@@ -60,5 +83,6 @@ export const User = sequelize.define('User', {
   }
 }, {
   tableName: 'users',
-  timestamps: true
+  timestamps: true,
+  defaultScope: { attributes: { exclude: ['faceDescriptor'] } }
 })

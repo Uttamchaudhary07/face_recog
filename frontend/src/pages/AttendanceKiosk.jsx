@@ -1,17 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react'
 import * as faceapi from 'face-api.js'
 import jsQR from 'jsqr'
+import { captureLiveFace } from '../utils/faceChallenge.js'
 import { markByFace, markByBarcode } from '../api'
 
 // Higher inputSize improves detection under varied angles and lighting
-const DETECTOR_OPTIONS = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 })
 
 // Number of frames captured and averaged before sending to backend.
 // Averaging reduces per-frame noise and improves matching accuracy.
-const FRAME_SAMPLES = 3
-const MIN_FACE_PX = 80
 
-export default function AttendanceKiosk(){
+export default function AttendanceKiosk({ user }){
+  const canMark = !import.meta.env.PROD || ['admin', 'teacher'].includes(user?.role)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const streamRef = useRef(null)
@@ -127,60 +126,34 @@ export default function AttendanceKiosk(){
   }, [scanMode])
 
   async function capture(){
-    if (capturing || !ready) return
-    setCapturing(true)
-    setStatus('Detecting face...')
     const video = videoRef.current
-    if (!video) { setCapturing(false); return }
-
-    // Capture multiple frames and average their descriptors to reduce noise.
-    // This significantly improves matching accuracy vs. single-frame capture.
-    const samples = []
-    for (let i = 0; i < FRAME_SAMPLES; i++){
-      const result = await faceapi
-        .detectSingleFace(video, DETECTOR_OPTIONS)
-        .withFaceLandmarks()
-        .withFaceDescriptor()
-
-      if (result) {
-        const { width, height } = result.detection.box
-        if (width >= MIN_FACE_PX && height >= MIN_FACE_PX) {
-          samples.push(Array.from(result.descriptor))
-        }
-      }
-      if (i < FRAME_SAMPLES - 1) await new Promise(r => setTimeout(r, 200))
-    }
-
-    if (samples.length === 0){
-      setStatus('No face detected. Ensure good lighting and look directly at the camera.')
-      setCapturing(false)
+    if (!canMark || capturing || scanMode || cooldown || !ready) return
+    if (!video || video.readyState < 2){
+      setStatus('Camera is still starting. Try again in a moment.')
       return
     }
 
-    // Average all captured descriptors
-    const descriptor = samples[0].map((_, i) =>
-      samples.reduce((sum, s) => sum + s[i], 0) / samples.length
-    )
-
+    setCapturing(true)
     try {
-      const data = await markByFace(descriptor)
-      if (data.status === 'already_marked') {
-        setStatus(`Attendance already marked for today — ${data.user.name}`)
-      } else {
-        setStatus(`Attendance marked for ${data.user.name}`)
+      const result = await captureLiveFace(video, setStatus, () => videoRef.current === video)
+      if (!result) return
+      if (result.message){
+        setStatus(result.message)
+        return
       }
-      // Cooldown for 5 seconds after any successful server response
+
+      setStatus('Head-turn check complete. Checking attendance...')
+      const data = await markByFace(result.descriptors, result.qualities)
+      setStatus(data.status === 'already_marked'
+        ? `Attendance already marked today for ${data.user.name}`
+        : `Attendance marked for ${data.user.name}`)
       setCooldown(true)
       setTimeout(() => setCooldown(false), 5000)
     } catch (err){
-      const serverStatus = err.response?.status
-      const serverStat = err.response?.data?.status
-      if (serverStatus === 404 && serverStat === 'ambiguous') {
-        setStatus('Recognition confidence too low. Adjust lighting or position and try again.')
-      } else if (serverStatus === 404) {
-        setStatus('Face not recognized. Contact your teacher or admin to enroll your face.')
+      if (err.response?.status === 404){
+        setStatus('Face could not be matched confidently. Try again or use barcode attendance.')
       } else {
-        setStatus(err.response?.data?.message || 'Failed to mark attendance')
+        setStatus(err.response?.data?.message || 'Could not complete the face check. Try again.')
       }
     } finally {
       setCapturing(false)
@@ -189,6 +162,7 @@ export default function AttendanceKiosk(){
 
   async function submitBarcode(e){
     e.preventDefault()
+    if (!canMark) return
     if (!barcode.trim() || cooldown) return
     setStatus('Submitting...')
     try {
@@ -211,20 +185,21 @@ export default function AttendanceKiosk(){
       <div className="grid">
         <div className="card">
           <h2>Face Attendance</h2>
+          {!canMark && <p>Sign in as a teacher or admin to mark attendance.</p>}
           <div className="video-box">
             <video ref={videoRef} autoPlay muted playsInline className="video--mirror" />
             <canvas ref={canvasRef} className="hidden-canvas" />
           </div>
           <button
             className="btn"
-            disabled={!ready || capturing || scanMode || cooldown}
+            disabled={!canMark || !ready || capturing || scanMode || cooldown}
             onClick={capture}
           >
             {capturing ? 'Detecting...' : cooldown ? 'Please wait...' : 'Capture & Mark Attendance'}
           </button>
           <button
             className="btn btn--ghost"
-            disabled={!ready || capturing || scanMode}
+            disabled={!canMark || !ready || capturing || scanMode}
             onClick={() => setScanMode(true)}
             style={{ marginTop: '0.5rem' }}
           >

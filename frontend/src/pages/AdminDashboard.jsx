@@ -1,3 +1,6 @@
+import StudentFields from '../components/StudentFields.jsx'
+import AttendanceReports from '../components/AttendanceReports.jsx'
+import BiometricAudit from '../components/BiometricAudit.jsx'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import jsQR from 'jsqr'
 import {
@@ -39,6 +42,7 @@ export default function AdminDashboard() {
 
   const [actionUser, setActionUser] = useState(null)
   const [actionType, setActionType] = useState('')
+  const [studentDetails, setStudentDetails] = useState({})
   const [actionValue, setActionValue] = useState('')
   const [actionOpenId, setActionOpenId] = useState(null)
 
@@ -235,6 +239,20 @@ export default function AdminDashboard() {
     if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
   }
 
+  function openStudentAction(user, action) {
+    setError('')
+    setActionUser(user)
+    setActionType(action)
+    setActionValue(user.role)
+    const { userId, department, semester, section } = user
+    setStudentDetails({ userId, department, semester, section })
+    setActionOpenId(null)
+  }
+
+  function updateStudentDetails(field, value) {
+    setStudentDetails((details) => ({ ...details, [field]: value }))
+  }
+
   async function createUser(e) {
     e.preventDefault(); setError(''); setMessage('')
     try {
@@ -359,7 +377,7 @@ export default function AdminDashboard() {
           <h3>CSV Bulk Import</h3>
           <p className="muted">
             Required columns: <code>name, email, password, userid, role</code><br />
-            Existing emails are updated. Students require <code>userid</code>. Roles: student, teacher, admin, pending.
+            Existing emails are updated. New students require <code>userid, department, semester</code>. <code>section</code> is optional. Roles: student, teacher, admin, pending.
           </p>
           <input ref={csvInputRef} type="file" accept=".csv,text/csv" onChange={handleCsvFile} style={{ display: 'none' }} />
           <button className="btn" disabled={csvLoading} onClick={() => csvInputRef.current?.click()} style={{ marginTop: '0.8rem' }}>
@@ -430,6 +448,9 @@ export default function AdminDashboard() {
               <span>
                 <div className="cell-title">{user.name}</div>
                 <div className="cell-meta">{user.userId || 'No User ID'}</div>
+                {user.role === 'student' && user.department && <div className="cell-meta">
+                  {user.department} · Semester {user.semester}{user.section ? ` · Section ${user.section}` : ''}
+                </div>}
               </span>
               <span style={{ wordBreak: 'break-all', fontSize: '0.85rem' }}>{user.email || '-'}</span>
               <span className="pill pill--neutral">{user.role}</span>
@@ -447,7 +468,8 @@ export default function AdminDashboard() {
                   <div className="action-menu">
                     <button onClick={() => { setEnrollTarget(user); setActionOpenId(null) }}>Enroll Face</button>
                     {user.hasFace && <button onClick={() => { setActionUser(user); setActionType('resetFace'); setActionOpenId(null) }}>Reset Face</button>}
-                    <button onClick={() => { setActionUser(user); setActionType('role'); setActionValue(user.role); setActionOpenId(null) }}>Change Role</button>
+                    <button onClick={() => openStudentAction(user, 'role')}>Change Role</button>
+                    {user.role === 'student' && <button onClick={() => openStudentAction(user, 'studentDetails')}>Edit Student Details</button>}
                     <button onClick={() => { setActionUser(user); setActionType('barcode'); setActionValue(user.barcode || ''); setActionOpenId(null) }}>Scan Barcode</button>
                     <button onClick={() => { setActionUser(user); setActionType('password'); setActionValue(''); setActionOpenId(null) }}>Set Password</button>
                     {user.role === 'teacher' && (
@@ -518,6 +540,9 @@ export default function AdminDashboard() {
         </div>
       </div>
 
+      <AttendanceReports faculty refreshKey={users} />
+      <BiometricAudit />
+
       {/* ── Face Enrollment Modal ── */}
       {enrollTarget && (
         <FaceEnrollModal
@@ -542,6 +567,12 @@ export default function AdminDashboard() {
                 <option value="admin">Admin</option>
               </select>
             </label>
+            {createForm.role === 'student' && (
+              <StudentFields values={createForm} onChange={(field, value) => {
+                setCreateForm((form) => ({ ...form, [field]: value }))
+              }} />
+            )}
+            {error && <div className="error" role="alert">{error}</div>}
             <div className="modal__actions">
               <button type="button" className="btn btn--ghost" onClick={() => setCreateOpen(false)}>Cancel</button>
               <button className="btn">Create</button>
@@ -560,22 +591,41 @@ export default function AdminDashboard() {
               <div className="muted">Barcode</div><div className="mono">{actionUser.barcode || '—'}</div>
             </div>
           )}
-          {actionType === 'role' && (
-            <div className="stack">
-              <label>Role
-                <select value={actionValue} onChange={e => setActionValue(e.target.value)}>
-                  <option value="pending">pending</option>
-                  <option value="student">student</option>
-                  <option value="teacher">teacher</option>
-                  <option value="admin">admin</option>
-                </select>
-              </label>
-              <p className="muted">Role changes take effect immediately.</p>
+          {(actionType === 'role' || actionType === 'studentDetails') && (
+            <form className="stack" onSubmit={(e) => {
+              e.preventDefault()
+              const role = actionType === 'role' ? actionValue : actionUser.role
+              const details = role === 'student' ? studentDetails : {}
+              updateUser(actionUser.id, { role, ...details })
+            }}>
+              {actionType === 'role' && (
+                <label>
+                  Role
+                  <select value={actionValue} onChange={(e) => setActionValue(e.target.value)}>
+                    <option value="pending">pending</option>
+                    <option value="student">student</option>
+                    <option value="teacher">teacher</option>
+                    <option value="admin">admin</option>
+                  </select>
+                </label>
+              )}
+              {(actionType === 'studentDetails' || actionValue === 'student') && (
+                <>
+                  {!actionUser.userId && (
+                    <label>
+                      User ID (USN)
+                      <input value={studentDetails.userId ?? ''} onChange={(e) => updateStudentDetails('userId', e.target.value.toUpperCase())} required />
+                    </label>
+                  )}
+                  <StudentFields values={studentDetails} onChange={updateStudentDetails} />
+                </>
+              )}
+              {error && <div className="error" role="alert">{error}</div>}
               <div className="modal__actions">
-                <button className="btn btn--ghost" onClick={closeAction}>Cancel</button>
-                <button className="btn" onClick={() => updateUser(actionUser.id, { role: actionValue })}>Confirm</button>
+                <button type="button" className="btn btn--ghost" onClick={closeAction}>Cancel</button>
+                <button className="btn">{actionType === 'role' ? 'Confirm Role' : 'Save Details'}</button>
               </div>
-            </div>
+            </form>
           )}
           {actionType === 'barcode' && (
             <div className="stack">
