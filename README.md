@@ -1,20 +1,57 @@
 # Smart Attendance System
 
-The app supports a staff-operated face and barcode kiosk, admin-managed accounts, student CSV imports, teacher assignments, role-based reports, and encrypted biometric templates.
+A web app for recording student attendance with a webcam, a barcode, or a university seat number (USN). Administrators manage accounts, teachers monitor assigned students, and students can view their attendance and download a personal report.
 
-## Local setup
+## What the app does
 
-Use Node.js 24 and MySQL. Create a local attendance database and an application user, then set the MySQL credentials and a dedicated biometric key in `backend/.env`. Generate the key with `openssl rand -hex 32`.
+| Role | What you can do |
+| --- | --- |
+| Admin | Create accounts individually or by CSV, assign students to teachers, manage face enrollments, export attendance, and review biometric audit events. |
+| Teacher | View and export attendance for assigned students, enroll or reset their face templates, and see alerts for low or declining attendance. |
+| Student | Sign in with an account created by an admin, view your own attendance, and download your report. |
+
+The hosted kiosk requires a teacher or admin to sign in. For face attendance, the kiosk guides the student through a short head turn and checks lighting, blur, face size, and angle. It rejects uncertain matches and offers barcode or USN entry as a fallback. MySQL stores one attendance entry per account per day using India Standard Time.
+
+## Run locally
+
+You need **Node.js 24**, npm, and a running MySQL server. Allow webcam access in your browser to test face capture.
+
+### 1. Set up the database and backend
+
+Create a database such as `face_recog` and a MySQL application user with access to it. Then clone the repository and install the backend dependencies.
 
 ```sh
-cd backend
+git clone https://github.com/Uttamchaudhary07/face_recog.git
+cd face_recog/backend
 npm ci
 cp .env.example .env
-# Edit .env with your local settings.
+```
+
+Edit `backend/.env` with your settings. Generate separate values for `JWT_SECRET` and `BIOMETRIC_ENCRYPTION_KEY` using `openssl rand -hex 32` for each.
+
+| Setting | What to enter |
+| --- | --- |
+| `DB_HOST`, `DB_PORT`, `DB_NAME` | Local MySQL address, port, and database name. The example uses `127.0.0.1:3306` and `face_recog`. |
+| `DB_USER`, `DB_PASSWORD` | Credentials for the MySQL application user. |
+| `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Credentials for the first admin account. Set these before the first start. |
+| `JWT_SECRET` | Secret used to sign login tokens. |
+| `BIOMETRIC_ENCRYPTION_KEY` | A dedicated 64-character hexadecimal key. Keep it backed up so existing templates remain readable. |
+
+From `backend`, start the API. It prepares the schema and creates the configured admin account on first startup.
+
+```sh
 npm start
 ```
 
-In a second terminal:
+In a second terminal, confirm the API returns a healthy status.
+
+```sh
+curl http://localhost:5001/api/health
+```
+
+### 2. Start the frontend
+
+From the repository root, run:
 
 ```sh
 cd frontend
@@ -22,12 +59,27 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000` and sign in with the configured admin account. To create students, enter their USN, department, and semester. Section is optional. Student CSV imports use the same fields.
+Open [http://localhost:3000/login](http://localhost:3000/login) and sign in as the configured admin. To build the frontend for production, run `npm run build` from `frontend`.
 
-## Reports and biometric storage
+## Create and assign students
 
-The attendance target defaults to 75%. Reports use up to 90 days and infer attendance days from check-ins in the student's current department, semester, and section. Forecasts require five observed days. Teachers see assigned students.
+For one account, open **Admin Dashboard → Create User** and select the role. For a student, enter their USN, department, and semester. Section is optional.
 
-Biometric templates expire after 180 days by default. Set `BIOMETRIC_RETENTION_DAYS` and `ATTENDANCE_TARGET_PERCENT` in the backend environment. Keep the biometric key backed up securely. Use the admin dashboard to review the biometric audit log.
+For multiple accounts, use **Admin Dashboard → CSV Bulk Import**. The importer updates existing accounts by email, including their password and role. Use batches of up to 500 rows. Here is the format for a student row with test values.
 
-See the [Vercel deployment guide](./MYSQL_DEPLOYMENT.md) for hosted MySQL, project settings, and deployment checks.
+```csv
+name,email,password,userid,role,department,semester,section
+Example Student,example.student@example.invalid,REPLACE_WITH_TEMP_PASSWORD,TEST001,student,Computer Science,3,A
+```
+
+Use the teacher's **Assign Students** action to upload a CSV with a `userid` column containing student USNs. This appends to existing assignments. To enroll a face, an admin opens **Enroll Face** for the student. Teachers can do the same for their assigned students.
+
+## Reports and biometric privacy
+
+- **Reports and alerts.** The default attendance target is 75%. Forecasts use up to 90 days of history and appear after five observed days. Dates are inferred from check-ins within a department, semester, and section. A day with zero cohort check-ins cannot be identified as a class day.
+- **Biometric templates.** Face templates are encrypted with AES-256-GCM and used by the backend for matching. The admin dashboard shows enrollment, verification, reset, migration, and expiry events.
+- **Retention.** The default is 180 days. Change `BIOMETRIC_RETENTION_DAYS` and `ATTENDANCE_TARGET_PERCENT` in the backend environment. Keep local environment files, student CSVs, exports, and database backups out of Git.
+
+## Deploy to Vercel
+
+The frontend is a Vite project and the backend is an Express project. They use a hosted MySQL database. Follow the [Vercel deployment guide](./MYSQL_DEPLOYMENT.md) for project setup, TLS, environment variables, database provisioning, and the retention job.
