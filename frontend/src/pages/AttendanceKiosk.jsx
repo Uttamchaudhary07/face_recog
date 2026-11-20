@@ -9,8 +9,13 @@ import { markByFace, markByBarcode } from '../api'
 // Number of frames captured and averaged before sending to backend.
 // Averaging reduces per-frame noise and improves matching accuracy.
 
-export default function AttendanceKiosk({ user }){
-  const canMark = !import.meta.env.PROD || ['admin', 'teacher'].includes(user?.role)
+function attendanceMessage({ status, user, subject }) {
+  return status === 'already_marked'
+    ? `Attendance already marked for ${user.name} in ${subject}.`
+    : `Attendance marked for ${user.name} in ${subject}.`
+}
+
+export default function AttendanceKiosk(){
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const streamRef = useRef(null)
@@ -18,6 +23,8 @@ export default function AttendanceKiosk({ user }){
   const [ready, setReady] = useState(false)
   const [status, setStatus] = useState('Loading models and camera...')
   const [barcode, setBarcode] = useState('')
+  const [sessionCode, setSessionCode] = useState('')
+  const hasSessionCode = /^[0-9A-F]{12}$/.test(sessionCode)
   const [scanMode, setScanMode] = useState(false)
   const [capturing, setCapturing] = useState(false)
   // Cooldown prevents rapid re-submission after a successful or already-marked response
@@ -104,12 +111,8 @@ export default function AttendanceKiosk({ user }){
           setScanMode(false)
           setStatus('Barcode detected. Marking attendance...')
           try {
-            const data = await markByBarcode(decoded.trim())
-            if (data.status === 'already_marked') {
-              setStatus(`Already marked today for ${data.user.name}`)
-            } else {
-              setStatus(`Attendance marked for ${data.user.name}`)
-            }
+            const data = await markByBarcode(decoded.trim(), sessionCode)
+            setStatus(attendanceMessage(data))
           } catch (err){
             setStatus(err.response?.data?.message || 'Barcode not recognized')
           }
@@ -123,11 +126,11 @@ export default function AttendanceKiosk({ user }){
       rafId = requestAnimationFrame(scanLoop)
     }
     return () => { if (rafId) cancelAnimationFrame(rafId) }
-  }, [scanMode])
+  }, [scanMode, sessionCode])
 
   async function capture(){
     const video = videoRef.current
-    if (!canMark || capturing || scanMode || cooldown || !ready) return
+    if (!hasSessionCode || capturing || scanMode || cooldown || !ready) return
     if (!video || video.readyState < 2){
       setStatus('Camera is still starting. Try again in a moment.')
       return
@@ -143,10 +146,8 @@ export default function AttendanceKiosk({ user }){
       }
 
       setStatus('Head-turn check complete. Checking attendance...')
-      const data = await markByFace(result.descriptors, result.qualities)
-      setStatus(data.status === 'already_marked'
-        ? `Attendance already marked today for ${data.user.name}`
-        : `Attendance marked for ${data.user.name}`)
+      const data = await markByFace(result.descriptors, result.qualities, sessionCode)
+      setStatus(attendanceMessage(data))
       setCooldown(true)
       setTimeout(() => setCooldown(false), 5000)
     } catch (err){
@@ -162,16 +163,11 @@ export default function AttendanceKiosk({ user }){
 
   async function submitBarcode(e){
     e.preventDefault()
-    if (!canMark) return
-    if (!barcode.trim() || cooldown) return
+    if (!hasSessionCode || !barcode.trim() || cooldown) return
     setStatus('Submitting...')
     try {
-      const data = await markByBarcode(barcode.trim())
-      if (data.status === 'already_marked') {
-        setStatus(`Attendance already marked for today — ${data.user.name}`)
-      } else {
-        setStatus(`Attendance marked for ${data.user.name}`)
-      }
+      const data = await markByBarcode(barcode.trim(), sessionCode)
+      setStatus(attendanceMessage(data))
       setBarcode('')
       setCooldown(true)
       setTimeout(() => setCooldown(false), 5000)
@@ -182,24 +178,38 @@ export default function AttendanceKiosk({ user }){
 
   return (
     <div className="page">
+      <div className="card">
+        <div className="form">
+          <label>
+            Attendance session code
+            <input
+              autoComplete="off"
+              spellCheck={false}
+              value={sessionCode}
+              disabled={capturing || scanMode}
+              onChange={e => setSessionCode(e.target.value.toUpperCase().replace(/[^0-9A-F]/g, '').slice(0, 12))}
+              placeholder="Enter the code shared by staff"
+            />
+          </label>
+        </div>
+      </div>
       <div className="grid">
         <div className="card">
           <h2>Face Attendance</h2>
-          {!canMark && <p>Sign in as a teacher or admin to mark attendance.</p>}
           <div className="video-box">
             <video ref={videoRef} autoPlay muted playsInline className="video--mirror" />
             <canvas ref={canvasRef} className="hidden-canvas" />
           </div>
           <button
             className="btn"
-            disabled={!canMark || !ready || capturing || scanMode || cooldown}
+            disabled={!hasSessionCode || !ready || capturing || scanMode || cooldown}
             onClick={capture}
           >
             {capturing ? 'Detecting...' : cooldown ? 'Please wait...' : 'Capture & Mark Attendance'}
           </button>
           <button
             className="btn btn--ghost"
-            disabled={!canMark || !ready || capturing || scanMode}
+            disabled={!hasSessionCode || !ready || capturing || scanMode}
             onClick={() => setScanMode(true)}
             style={{ marginTop: '0.5rem' }}
           >
@@ -214,7 +224,6 @@ export default function AttendanceKiosk({ user }){
               Cancel Scan
             </button>
           )}
-          <p className="status">{status}</p>
         </div>
 
         <div className="card">
@@ -228,10 +237,11 @@ export default function AttendanceKiosk({ user }){
                 placeholder="Scan or type your ID"
               />
             </label>
-            <button className="btn">Submit</button>
+            <button className="btn" disabled={!hasSessionCode || !barcode.trim() || cooldown}>Submit</button>
           </form>
         </div>
       </div>
+      <p className="status" role="status">{status}</p>
     </div>
   )
 }

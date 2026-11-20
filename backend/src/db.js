@@ -1,5 +1,6 @@
 import { Sequelize } from 'sequelize'
 import mysql from 'mysql2'
+import { ensureAttendanceSessionColumn, removeDailyAttendanceConstraint } from './utils/attendanceSessionMigration.js'
 
 const ssl = process.env.DB_SSL === 'true' ? { rejectUnauthorized: true, verifyIdentity: true } : undefined
 if (ssl && process.env.DB_SSL_CA) ssl.ca = process.env.DB_SSL_CA.replace(/\\n/g, '\n')
@@ -27,7 +28,10 @@ const sequelize = new Sequelize(
 export async function connectDb() {
   try {
     await sequelize.authenticate()
+    const query = sequelize.getQueryInterface()
+    await ensureAttendanceSessionColumn(query)
     await sequelize.sync({ alter: false })
+    await removeDailyAttendanceConstraint(query)
     console.log('MySQL connected successfully')
   } catch (error) {
     console.error('Unable to connect to MySQL:', error)

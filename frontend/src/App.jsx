@@ -54,7 +54,7 @@ export default function App(){
     <BrowserRouter>
       <Nav user={user} onLogout={handleLogout} />
       <Routes>
-        <Route path="/" element={<AttendanceKiosk user={user} />} />
+        <Route path="/" element={<AttendanceKiosk />} />
         <Route path="/login" element={<Login onLogin={handleLogin} />} />
         {/* Signup removed — accounts are created by admin only */}
         <Route path="/signup" element={<Navigate to="/login" replace />} />

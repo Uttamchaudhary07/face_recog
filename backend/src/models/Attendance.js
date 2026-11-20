@@ -1,6 +1,7 @@
 import { DataTypes } from 'sequelize'
 import { sequelize } from '../db.js'
 import { User } from './User.js'
+import { AttendanceSession } from './AttendanceSession.js'
 
 export const Attendance = sequelize.define('Attendance', {
   id: {
@@ -15,6 +16,10 @@ export const Attendance = sequelize.define('Attendance', {
       model: User,
       key: 'id'
     }
+  },
+  sessionId: {
+    type: DataTypes.INTEGER,
+    allowNull: true
   },
   name: {
     type: DataTypes.STRING(255),
@@ -52,8 +57,9 @@ export const Attendance = sequelize.define('Attendance', {
   tableName: 'attendances',
   timestamps: true,
   indexes: [
-    { unique: true, fields: ['userId', 'date'] }
+    { name: 'attendances_user_session', unique: true, fields: ['userId', 'sessionId'] }
   ]
 })
 
 Attendance.belongsTo(User, { foreignKey: 'userId', as: 'user' })
+Attendance.belongsTo(AttendanceSession, { foreignKey: 'sessionId', as: 'session', constraints: false })

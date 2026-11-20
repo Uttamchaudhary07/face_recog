@@ -2,6 +2,7 @@ import AttendanceReports from '../components/AttendanceReports.jsx'
 import React, { useEffect, useMemo, useState } from 'react'
 import { getLogs, getMyStudents, resetFaceEnrollment } from '../api'
 import FaceEnrollModal from '../components/FaceEnrollModal.jsx'
+import AttendanceSessions from '../components/AttendanceSessions.jsx'
 
 function todayIST() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
@@ -130,6 +131,7 @@ export default function TeacherDashboard(){
       </div>
 
       {/* ── Assigned Students ── */}
+      <AttendanceSessions />
       <AttendanceReports faculty />
       <div className="card">
         <h3>My Students</h3>
@@ -222,7 +224,10 @@ export default function TeacherDashboard(){
             <div key={log.id} className="table__row">
               <span>{log.name}</span>
               <span>{log.userIdText || '—'}</span>
-              <span className="pill pill--info">{log.method}</span>
+              <span>
+                <span className="pill pill--info">{log.method}</span>
+                {log.session && <div className="cell-meta">{log.session.subject}</div>}
+              </span>
               <span>{log.date}</span>
               <span>{log.time}</span>
             </div>

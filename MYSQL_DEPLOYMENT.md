@@ -23,8 +23,8 @@ npm ci
 NODE_ENV=production npm run db:prepare
 ```
 
-Provisioning creates the schema and initial admin, and migrates existing templates if upgrading a populated database. A fresh preview should use test accounts and test data. Keep the admin password in your password manager.
+Provisioning creates the schema and initial admin, and migrates existing templates if upgrading a populated database. Run it again before deploying attendance sessions to an existing database. It keeps historical attendance rows and moves duplicate prevention from one check-in per day to one per session. A fresh preview should use test accounts and test data. Keep the admin password in your password manager.
 
 ## Deploy and verify
 
-Deploy the Express project and check `/api/health`. Set the frontend's `VITE_API_ROOT` to the backend HTTPS URL ending in `/api` before building it. Refresh `/login` and verify that a staff account can sign in, use the kiosk, and see reports. Production kiosk submissions require a teacher or admin session. Verify biometrics and alerts with test data before using real student records.
+Deploy the Express project and check `/api/health`. Set the frontend's `VITE_API_ROOT` to the backend HTTPS URL ending in `/api` before building it. Sign in as staff at `/login` and start a session from the dashboard. Open the home page in a signed-out browser and use the code to verify face and barcode submissions for test accounts. Close the session and confirm that its code no longer accepts check-ins.

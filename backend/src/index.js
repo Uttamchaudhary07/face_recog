@@ -6,6 +6,7 @@ import { sequelize } from './db.js'
 import authRoutes from './routes/auth.js'
 import adminRoutes from './routes/admin.js'
 import attendanceRoutes from './routes/attendance.js'
+import attendanceSessionRoutes from './routes/attendanceSessions.js'
 import { maintainTemplates, verifyBiometricSettings } from './utils/biometrics.js'
 import { prepareDatabase, verifyHostedSettings } from './setup.js'
 
@@ -54,6 +55,7 @@ app.get('/api/cron/purge-biometrics', async (req, res) => {
 
 app.use('/api/auth', authRoutes)
 app.use('/api/admin', adminRoutes)
+app.use('/api/attendance/sessions', attendanceSessionRoutes)
 app.use('/api/attendance', attendanceRoutes)
 
 if (!process.env.VERCEL && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

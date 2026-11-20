@@ -10,7 +10,9 @@ A web app for recording student attendance with a webcam, a barcode, or a univer
 | Teacher | View and export attendance for assigned students, enroll or reset their face templates, and see alerts for low or declining attendance. |
 | Student | Sign in with an account created by an admin, view your own attendance, and download your report. |
 
-The hosted kiosk requires a teacher or admin to sign in. For face attendance, the kiosk guides the student through a short head turn and checks lighting, blur, face size, and angle. It rejects uncertain matches and offers barcode or USN entry as a fallback. MySQL stores one attendance entry per account per day using India Standard Time.
+Students can mark attendance from the home page without signing in. Enter the session code shared by staff, then use face recognition, barcode, or USN. Face recognition guides the student through a short head turn, checks lighting, blur, face size, and angle, and rejects uncertain matches. MySQL stores one check-in per student per session, so students can attend multiple subjects on the same day. Daily attendance reports still count each date once and display times in India Standard Time.
+
+Teachers start and close sessions for their assigned subjects from **Attendance Sessions**. Admins can start sessions for any subject, close any session, and assign subjects using **Edit Subjects** on a teacher's account. A session starts immediately and closes at the end of its chosen duration unless staff close it early.
 
 ## Run locally
 

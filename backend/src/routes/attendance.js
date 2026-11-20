@@ -1,6 +1,7 @@
 import express from 'express'
 import { User } from '../models/User.js'
 import { Attendance } from '../models/Attendance.js'
+import { AttendanceSession } from '../models/AttendanceSession.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { averageDescriptors, euclideanDistance, findConsistentFaceMatch, isFaceDescriptor } from '../utils/face.js'
 import { Op } from 'sequelize'
@@ -12,19 +13,53 @@ import { attendanceTarget, buildAttendanceReports, cohortKey, reportWindow } fro
 
 const router = express.Router()
 const staffOnly = [requireAuth, requireRole('admin', 'teacher')]
-const hosted = Boolean(process.env.VERCEL) || process.env.NODE_ENV === 'production'
-const kioskAccess = hosted ? [...staffOnly, async (req, res, next) => {
-  try {
-    const actor = await User.findByPk(req.user.id, { attributes: ['role'] })
-    if (!['admin', 'teacher'].includes(actor?.role)) return res.status(403).json({ message: 'Staff sign-in required to mark attendance' })
-    next()
-  } catch {
-    res.status(503).json({ message: 'Kiosk access is unavailable' })
+
+async function requireOpenSession(req, res, next) {
+  const code = typeof req.body.sessionCode === 'string' ? req.body.sessionCode.trim().toUpperCase() : ''
+  if (!/^[0-9A-F]{12}$/.test(code)) {
+    return res.status(400).json({ message: 'Enter the 12-character attendance session code' })
   }
-}] : []
+  try {
+    const session = await AttendanceSession.findOne({ where: { code } })
+    if (!session || session.expiresAt <= new Date()) {
+      return res.status(410).json({ message: 'Session code is invalid or the session has ended' })
+    }
+    req.attendanceSession = session
+    next()
+  } catch (error) {
+    console.error('Attendance session lookup failed:', error.name)
+    res.status(503).json({ message: 'Could not check the attendance session. Try again.' })
+  }
+}
 
+async function markForSession(res, sessionId, student, method) {
+  const result = await sequelize.transaction(async transaction => {
+    const session = await AttendanceSession.findByPk(sessionId, { transaction, lock: true })
+    const { now, date, time } = nowIST()
+    if (!session || session.expiresAt <= now) return null
 
-router.post('/face/verify', ...kioskAccess, async (req, res) => {
+    const where = { userId: student.id, sessionId }
+    const existing = await Attendance.findOne({ where, transaction })
+    if (!existing) {
+      await Attendance.create({
+        ...where,
+        userIdText: student.userId,
+        name: student.name,
+        role: student.role,
+        method,
+        status: 'present',
+        timestamp: now,
+        date,
+        time
+      }, { transaction })
+    }
+    return { status: existing ? 'already_marked' : 'marked', subject: session.subject }
+  })
+  if (!result) return res.status(410).json({ message: 'The attendance session has ended' })
+  return res.json({ ...result, user: { name: student.name } })
+}
+
+router.post('/face/verify', requireOpenSession, async (req, res) => {
   let audit
   try {
     const { descriptors, qualities } = req.body
@@ -38,11 +73,11 @@ router.post('/face/verify', ...kioskAccess, async (req, res) => {
       return res.status(400).json({ message: 'Face image quality is too low. Improve lighting or use barcode attendance.' })
     }
 
-    audit = await BiometricAudit.create({ action: 'verification', actorId: req.user?.id, outcome: 'started' })
+    audit = await BiometricAudit.create({ action: 'verification', outcome: 'started' })
     const users = await User.unscoped().findAll({
       attributes: ['id', 'userId', 'name', 'role', 'faceDescriptor'],
       where: {
-        role: { [Op.ne]: 'pending' },
+        role: 'student',
         faceDescriptor: { [Op.ne]: null }
       }
     })
@@ -61,23 +96,7 @@ router.post('/face/verify', ...kioskAccess, async (req, res) => {
       return res.status(400).json({ message: 'User does not have a valid userId' })
     }
 
-    const { now, date, time } = nowIST()
-    const existing = await Attendance.findOne({ where: { userId: best.id, date } })
-    if (!existing) {
-      await Attendance.create({
-        userId: best.id,
-        userIdText: best.userId,
-        name: best.name,
-        role: best.role,
-        method: 'face',
-        status: 'present',
-        timestamp: now,
-        date,
-        time
-      })
-    }
-
-    return res.json({ status: existing ? 'already_marked' : 'marked', user: { id: best.id, name: best.name, userId: best.userId } })
+    return await markForSession(res, req.attendanceSession.id, best, 'face')
   } catch (err) {
     if (audit?.outcome === 'started') await audit.update({ outcome: 'error' }).catch(() => {})
     console.error('Face verification failed:', err.name)
@@ -173,39 +192,21 @@ router.get('/my-students', ...staffOnly, async (req, res) => {
   }
 })
 
-router.post('/barcode', ...kioskAccess, async (req, res) => {
+router.post('/barcode', requireOpenSession, async (req, res) => {
   try {
     const { barcode } = req.body
     if (!barcode) return res.status(400).json({ message: 'Barcode required' })
     const normalized = String(barcode).trim().toUpperCase()
     const user = await User.findOne({
-      where: { [Op.or]: [{ barcode: normalized }, { userId: normalized }] }
+      where: { role: 'student', [Op.or]: [{ barcode: normalized }, { userId: normalized }] }
     })
     if (!user) return res.status(404).json({ message: 'User not found' })
-    if (user.role === 'pending') return res.status(403).json({ message: 'User pending approval' })
     if (!user.userId) return res.status(400).json({ message: 'User does not have a valid userId' })
 
-    const { now, date, time } = nowIST()
-    const existing = await Attendance.findOne({ where: { userId: user.id, date } })
-    if (existing) {
-      return res.json({ status: 'already_marked', user: { id: user.id, name: user.name, userId: user.userId } })
-    }
-
-    await Attendance.create({
-      userId: user.id,
-      userIdText: user.userId,
-      name: user.name,
-      role: user.role,
-      method: 'barcode',
-      status: 'present',
-      timestamp: now,
-      date,
-      time
-    })
-    return res.json({ status: 'marked', user: { id: user.id, name: user.name, userId: user.userId } })
+    return await markForSession(res, req.attendanceSession.id, user, 'barcode')
   } catch (err) {
     console.error('[Barcode] Error:', err.message)
-    return res.status(500).json({ message: 'Server error', error: err.message })
+    return res.status(500).json({ message: 'Barcode attendance is unavailable' })
   }
 })
 
@@ -256,6 +257,7 @@ router.get('/logs', requireAuth, async (req, res) => {
     const logs = await Attendance.findAll({
       where: whereClause,
       order: [['timestamp', 'DESC']],
+      include: [{ association: 'session', attributes: ['subject'] }],
       limit: 1000
     })
     return res.json(logs)
