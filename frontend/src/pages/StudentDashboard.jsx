@@ -1,3 +1,4 @@
+import AttendanceReports from '../components/AttendanceReports.jsx'
 import React, { useEffect, useState } from 'react'
 import { getLogs, getMe } from '../api'
 
@@ -32,6 +33,7 @@ export default function StudentDashboard(){
         {error && <div className="error" style={{ marginTop: '0.8rem' }}>{error}</div>}
       </div>
 
+      <AttendanceReports />
       <div className="card">
         <h3>My Attendance</h3>
         <div className="table">

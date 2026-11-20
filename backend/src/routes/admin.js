@@ -1,11 +1,22 @@
 import express from 'express'
 import bcrypt from 'bcryptjs'
-import { User } from '../models/User.js'
+import { User, normalizeUsn, isDuplicateUsn } from '../models/User.js'
 import { Attendance } from '../models/Attendance.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
+import { validateStudentDetails } from '../utils/studentDetails.js'
+import { BiometricAudit } from '../models/BiometricAudit.js'
+import { hasTemplateForUser, retentionDays, templateStatusFields } from '../utils/biometrics.js'
 
 const router = express.Router()
-router.use(requireAuth, requireRole('admin'))
+router.use(requireAuth, requireRole('admin'), async (req, res, next) => {
+  try {
+    const viewer = await User.findByPk(req.user.id, { attributes: ['role'] })
+    if (viewer?.role !== 'admin') return res.status(403).json({ message: 'Admin access required' })
+    next()
+  } catch {
+    res.status(503).json({ message: 'Admin access is unavailable' })
+  }
+})
 
 const ALLOWED_ROLES = ['admin', 'teacher', 'student', 'pending']
 
@@ -35,11 +46,25 @@ function parseCSV(text) {
   return rows
 }
 
+router.get('/biometric-audit', async (req, res) => {
+  try {
+    const events = await BiometricAudit.findAll({ order: [['createdAt', 'DESC'], ['id', 'DESC']], limit: 100 })
+    res.set('Cache-Control', 'private, no-store')
+    return res.json({ retentionDays: retentionDays(), events })
+  } catch (err) {
+    console.error('Biometric audit access failed:', err.name)
+    return res.status(500).json({ message: 'Biometric audit is unavailable' })
+  }
+})
+
 // ─── List users ───────────────────────────────────────────────────────────────
 router.get('/users', async (req, res) => {
   try {
     const role = req.query.role
-    const users = await User.findAll({ where: role ? { role } : {} })
+    const users = await User.unscoped().findAll({
+      where: role ? { role } : {},
+      attributes: { exclude: ['faceDescriptor', 'passwordHash'], include: templateStatusFields }
+    })
     return res.json(users.map(u => ({
       id: u.id,
       name: u.name,
@@ -49,7 +74,8 @@ router.get('/users', async (req, res) => {
       barcode: u.barcode,
       subjects: u.subjects,
       assignedStudents: u.assignedStudents,
-      hasFace: Array.isArray(u.faceDescriptor) && u.faceDescriptor.length === 128,
+      department: u.department, semester: u.semester, section: u.section,
+      hasFace: hasTemplateForUser(u),
       createdAt: u.createdAt,
       updatedAt: u.updatedAt
     })))
@@ -69,22 +95,25 @@ router.post('/users', async (req, res) => {
     if (!ALLOWED_ROLES.includes(role)) {
       return res.status(400).json({ message: `Invalid role. Allowed: ${ALLOWED_ROLES.join(', ')}` })
     }
-    if (role === 'student' && !userId) {
+    if (role === 'student' && !normalizeUsn(userId)) {
       return res.status(400).json({ message: 'Student userId (USN) is required' })
     }
+    const details = role === 'student' ? validateStudentDetails(req.body) : { values: {} }
+    if (details.error) return res.status(400).json({ message: details.error })
     const passwordHash = await bcrypt.hash(password, 10)
     const user = await User.create({
       name: name.trim(),
       email: email.trim().toLowerCase(),
       passwordHash,
       role,
-      userId: userId ? userId.trim().toUpperCase() : undefined,
-      barcode: barcode ? barcode.trim().toUpperCase() : undefined
+      userId: normalizeUsn(userId),
+      barcode: barcode ? barcode.trim().toUpperCase() : undefined,
+      ...details.values
     })
     console.log(`[AdminCreateUser] Created ${role} "${name}" (${email})`)
-    return res.status(201).json({ id: user.id, name: user.name, email: user.email, role: user.role, userId: user.userId })
+    return res.status(201).json({ id: user.id, name: user.name, email: user.email, role: user.role, userId: user.userId, department: user.department, semester: user.semester, section: user.section })
   } catch (err) {
-    console.error('[AdminCreateUser] Error:', err.message)
+    if (isDuplicateUsn(err)) return res.status(409).json({ message: 'USN already registered' })
     return res.status(500).json({ message: 'Server error', error: err.message })
   }
 })
@@ -93,10 +122,12 @@ router.post('/users', async (req, res) => {
 router.patch('/users/:id', async (req, res) => {
   try {
     const { role, assignedStudents, subjects, barcode, userId, name, email, password } = req.body
+    const usn = normalizeUsn(userId)
     const existing = await User.findByPk(req.params.id)
     if (!existing) return res.status(404).json({ message: 'User not found' })
 
-    if (userId && existing.userId && userId.toUpperCase() !== existing.userId.toUpperCase()) {
+    const existingUsn = normalizeUsn(existing.userId)
+    if (usn && existingUsn && usn !== existingUsn) {
       return res.status(400).json({ message: 'userId is immutable once set' })
     }
 
@@ -105,26 +136,36 @@ router.patch('/users/:id', async (req, res) => {
       if (!ALLOWED_ROLES.includes(role)) return res.status(400).json({ message: 'Invalid role' })
       update.role = role
     }
-    if (role === 'student' && !existing.userId && !userId) {
+    if (role === 'student' && !existingUsn && !usn) {
       return res.status(400).json({ message: 'Student userId (USN) is required' })
+    }
+    const editingDetails = ['department', 'semester', 'section'].some((field) => Object.hasOwn(req.body, field))
+    const becomingStudent = role === 'student' && existing.role !== 'student'
+    if ((role || existing.role) === 'student' && (becomingStudent || editingDetails)) {
+      const details = validateStudentDetails(req.body, { department: existing.department, semester: existing.semester })
+      if (details.error) return res.status(400).json({ message: details.error })
+      Object.assign(update, details.values)
     }
     if (Array.isArray(assignedStudents)) update.assignedStudents = assignedStudents
     if (Array.isArray(subjects)) update.subjects = subjects
     if (barcode !== undefined) update.barcode = barcode ? barcode.trim().toUpperCase() : null
-    if (userId !== undefined && !existing.userId) update.userId = userId ? userId.trim().toUpperCase() : null
+    if (userId !== undefined && !existingUsn) update.userId = usn
     if (name) update.name = name.trim()
     if (email) update.email = email.trim().toLowerCase()
     if (password) update.passwordHash = await bcrypt.hash(password, 10)
 
     await existing.update(update)
-    const updated = await User.findByPk(req.params.id)
+    const updated = await User.unscoped().findByPk(req.params.id, {
+      attributes: { exclude: ['faceDescriptor', 'passwordHash'], include: templateStatusFields }
+    })
     return res.json({
       id: updated.id, name: updated.name, email: updated.email, role: updated.role,
       userId: updated.userId, barcode: updated.barcode,
-      hasFace: Array.isArray(updated.faceDescriptor) && updated.faceDescriptor.length === 128
+      department: updated.department, semester: updated.semester, section: updated.section,
+      hasFace: hasTemplateForUser(updated)
     })
   } catch (err) {
-    console.error('[AdminUpdateUser] Error:', err.message)
+    if (isDuplicateUsn(err)) return res.status(409).json({ message: 'USN already registered' })
     return res.status(500).json({ message: 'Server error', error: err.message })
   }
 })
@@ -169,7 +210,7 @@ router.get('/attendance', async (req, res) => {
 })
 
 // ─── CSV Bulk Import ──────────────────────────────────────────────────────────
-// Expected CSV headers: name, email, password, userid, role
+// CSV supports name, email, password, userid, role, department, semester, section
 // Supported roles: student, teacher, admin, pending
 // Students require a userid (USN). Existing emails are updated.
 router.post('/csv-import', async (req, res) => {
@@ -240,9 +281,25 @@ router.post('/csv-import', async (req, res) => {
       try {
         const passwordHash = await bcrypt.hash(password, 10)
         const existing = await User.findOne({ where: { email } })
+        const department = col(row, 'department')
+        const semester = col(row, 'semester')
+        const section = col(row, 'section')
+        const input = {
+          ...(department ? { department } : {}),
+          ...(semester ? { semester } : {}),
+          ...(section ? { section } : {})
+        }
+        const details = role === 'student' && (existing?.role !== 'student' || Object.keys(input).length)
+          ? validateStudentDetails(input, { department: existing?.department, semester: existing?.semester })
+          : { values: {} }
+        if (details.error) {
+          errors.push(`Row ${rowNum}: ${details.error}`)
+          failed++
+          continue
+        }
 
         if (existing) {
-          const upd = { name, passwordHash, role }
+          const upd = { name, passwordHash, role, ...details.values }
           if (userId && !existing.userId) upd.userId = userId
           await existing.update(upd)
           updated++
@@ -252,12 +309,13 @@ router.post('/csv-import', async (req, res) => {
             email,
             passwordHash,
             role,
-            userId: userId || null
+            userId: userId || null,
+            ...details.values
           })
           created++
         }
       } catch (err) {
-        const msg = err.parent?.sqlMessage || err.message
+        const msg = isDuplicateUsn(err) ? 'USN already registered' : 'Unable to save this row'
         errors.push(`Row ${rowNum}: ${msg}`)
         failed++
       }

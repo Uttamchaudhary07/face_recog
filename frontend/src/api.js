@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const API_ROOT = import.meta.env.VITE_API_ROOT || 'http://localhost:5001/api'
+const API_ROOT = import.meta.env.VITE_API_ROOT || (import.meta.env.PROD ? '/api' : 'http://localhost:5001/api')
 
 export const api = axios.create({
   baseURL: API_ROOT,
@@ -14,24 +14,6 @@ export function setAuthToken(token){
     delete api.defaults.headers.common.Authorization
   }
 }
-
-// Log every backend request/response to Chrome DevTools console
-api.interceptors.request.use(req => {
-  console.log(`[API →] ${req.method?.toUpperCase()} ${req.baseURL}${req.url}`, req.data ?? '')
-  return req
-})
-api.interceptors.response.use(
-  res => {
-    console.log(`[API ←] ${res.status} ${res.config.url}`, res.data)
-    return res
-  },
-  err => {
-    const status = err.response?.status ?? 'ERR'
-    const data   = err.response?.data ?? err.message
-    console.error(`[API ✗] ${status} ${err.config?.url}`, data)
-    return Promise.reject(err)
-  }
-)
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 export async function login(payload){
@@ -76,8 +58,8 @@ export async function adminCsvImport(csvText){
 }
 
 // ─── Attendance ───────────────────────────────────────────────────────────────
-export async function markByFace(descriptor){
-  const res = await api.post('/attendance/face/verify', { descriptor })
+export async function markByFace(descriptors, qualities){
+  const res = await api.post('/attendance/face/verify', { descriptors, qualities })
   return res.data
 }
 
@@ -107,8 +89,13 @@ export async function getMyStudents(){
   return res.data
 }
 
-export async function getFaceDescriptors(){
-  const res = await api.get('/attendance/face/descriptors')
+export async function getAttendanceReports(){
+  const res = await api.get('/attendance/reports')
+  return res.data
+}
+
+export async function getBiometricAudit(){
+  const res = await api.get('/admin/biometric-audit')
   return res.data
 }
 

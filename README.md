@@ -1,57 +1,33 @@
-# Smart Attendance System (MVP)
+# Smart Attendance System
 
-Features:
-- Signup/login with pending approval
-- Admin assigns roles and manages users
-- Face attendance via webcam (face-api.js)
-- Barcode/ID attendance fallback
-- Role-based attendance logs
+The app supports a staff-operated face and barcode kiosk, admin-managed accounts, student CSV imports, teacher assignments, role-based reports, and encrypted biometric templates.
 
-## Prerequisites
-- Node.js 18+
-- MongoDB running locally
+## Local setup
 
-## Setup
+Use Node.js 24 and MySQL. Create a local attendance database and an application user, then set the MySQL credentials and a dedicated biometric key in `backend/.env`. Generate the key with `openssl rand -hex 32`.
 
-### Backend
-```
+```sh
 cd backend
-npm install
+npm ci
 cp .env.example .env
-npm run dev
+# Edit .env with your local settings.
+npm start
 ```
 
-### Frontend
-```
+In a second terminal:
+
+```sh
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3000` and sign in with the configured admin account. To create students, enter their USN, department, and semester. Section is optional. Student CSV imports use the same fields.
 
-## Default Admin
-Set in `.env`:
-- `ADMIN_EMAIL` (default `admin@example.com`)
-- `ADMIN_PASSWORD` (default `admin123`)
+## Reports and biometric storage
 
-## Face Models
-Models live in `frontend/public/models`.
+The attendance target defaults to 75%. Reports use up to 90 days and infer attendance days from check-ins in the student's current department, semester, and section. Forecasts require five observed days. Teachers see assigned students.
 
-You can download them from the `face-api.js` models repo.
+Biometric templates expire after 180 days by default. Set `BIOMETRIC_RETENTION_DAYS` and `ATTENDANCE_TARGET_PERCENT` in the backend environment. Keep the biometric key backed up securely. Use the admin dashboard to review the biometric audit log.
 
-# Connect to MongoDB
-mongosh
-
-# Create database and switch to it
-use face_recog_v1
-
-# Create a user for this database with password
-db.createUser({
-  user: "face_recog_user",
-  pwd: "Password123",
-  roles: [{role: "readWrite", db: "face_recog_v1"}]
-})
-
-# Exit MongoDB
-exit
+See the [Vercel deployment guide](./MYSQL_DEPLOYMENT.md) for hosted MySQL, project settings, and deployment checks.

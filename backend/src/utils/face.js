@@ -1,5 +1,44 @@
+const MATCH_THRESHOLD = 0.42
+const MIN_MATCH_MARGIN = 0.08
+
 export function validateDescriptor(d) {
   return Array.isArray(d) && d.length === 128 && d.every(v => typeof v === 'number' && isFinite(v))
+}
+
+export const isFaceDescriptor = validateDescriptor
+
+export function findConsistentFaceMatch(descriptors, users, qualities){
+  let matchedUser
+  let worstDistance = 0
+
+  for (const [index, descriptor] of descriptors.entries()){
+    const threshold = MATCH_THRESHOLD - (1 - qualities[index]) * 0.08
+    const margin = MIN_MATCH_MARGIN + (1 - qualities[index]) * 0.04
+    let closestUser
+    let closestDistance = Number.POSITIVE_INFINITY
+    let nextDistance = Number.POSITIVE_INFINITY
+
+    for (const { user, template } of users){
+      const distance = euclideanDistance(descriptor, template)
+      if (distance < closestDistance){
+        nextDistance = closestDistance
+        closestDistance = distance
+        closestUser = user
+      } else if (distance < nextDistance){
+        nextDistance = distance
+      }
+    }
+
+    if (!closestUser || closestDistance > threshold || nextDistance - closestDistance < margin){
+      return null
+    }
+    if (matchedUser && matchedUser.id !== closestUser.id) return null
+
+    matchedUser = closestUser
+    worstDistance = Math.max(worstDistance, closestDistance)
+  }
+
+  return { user: matchedUser, distance: worstDistance }
 }
 
 export function euclideanDistance(a, b) {

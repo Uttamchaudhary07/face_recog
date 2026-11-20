@@ -2,208 +2,178 @@ import express from 'express'
 import { User } from '../models/User.js'
 import { Attendance } from '../models/Attendance.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
-import { euclideanDistance, averageDescriptors, validateDescriptor } from '../utils/face.js'
-import { nowIST } from '../utils/date.js'
+import { averageDescriptors, euclideanDistance, findConsistentFaceMatch, isFaceDescriptor } from '../utils/face.js'
 import { Op } from 'sequelize'
+import { sequelize } from '../db.js'
+import { BiometricAudit } from '../models/BiometricAudit.js'
+import { decryptTemplate, encryptTemplate, hasTemplateForUser, templateStatusFields } from '../utils/biometrics.js'
+import { nowIST } from '../utils/date.js'
+import { attendanceTarget, buildAttendanceReports, cohortKey, reportWindow } from '../utils/attendanceReports.js'
 
 const router = express.Router()
-
-const VERIFY_THRESHOLD = 0.42
-const CONFIDENCE_GAP = 0.08
-const ENROLL_DUPLICATE_THRESHOLD = 0.45
-
-// ─── Verification (public) ────────────────────────────────────────────────────
-router.post('/face/verify', async (req, res) => {
+const staffOnly = [requireAuth, requireRole('admin', 'teacher')]
+const hosted = Boolean(process.env.VERCEL) || process.env.NODE_ENV === 'production'
+const kioskAccess = hosted ? [...staffOnly, async (req, res, next) => {
   try {
-    const { descriptor } = req.body
-    if (!validateDescriptor(descriptor)) {
-      return res.status(400).json({ message: 'Valid 128-element descriptor required' })
+    const actor = await User.findByPk(req.user.id, { attributes: ['role'] })
+    if (!['admin', 'teacher'].includes(actor?.role)) return res.status(403).json({ message: 'Staff sign-in required to mark attendance' })
+    next()
+  } catch {
+    res.status(503).json({ message: 'Kiosk access is unavailable' })
+  }
+}] : []
+
+
+router.post('/face/verify', ...kioskAccess, async (req, res) => {
+  let audit
+  try {
+    const { descriptors, qualities } = req.body
+    if (!Array.isArray(descriptors) || descriptors.length !== 3 || !descriptors.every(isFaceDescriptor)) {
+      return res.status(400).json({ message: 'Three valid face samples are required' })
+    }
+    if (new Set(descriptors.map((descriptor) => JSON.stringify(descriptor))).size !== descriptors.length) {
+      return res.status(400).json({ message: 'Capture a fresh frame for each face sample' })
+    }
+    if (!Array.isArray(qualities) || qualities.length !== 3 || !qualities.every((score) => Number.isFinite(score) && score >= 0.45 && score <= 1)) {
+      return res.status(400).json({ message: 'Face image quality is too low. Improve lighting or use barcode attendance.' })
     }
 
-    const users = await User.findAll({ where: { role: { [Op.ne]: 'pending' } } })
-    const enrolled = users.filter(u => validateDescriptor(u.faceDescriptor))
-    console.log(`[FaceVerify] Comparing against ${enrolled.length} enrolled users`)
-
-    // Find best AND second-best match
-    let best = null, second = null
-    let bestDist = Infinity, secondDist = Infinity
-
-    for (const user of enrolled) {
-      const d = euclideanDistance(descriptor, user.faceDescriptor)
-      if (d < bestDist) {
-        second = best; secondDist = bestDist
-        best = user; bestDist = d
-      } else if (d < secondDist) {
-        second = user; secondDist = d
+    audit = await BiometricAudit.create({ action: 'verification', actorId: req.user?.id, outcome: 'started' })
+    const users = await User.unscoped().findAll({
+      attributes: ['id', 'userId', 'name', 'role', 'faceDescriptor'],
+      where: {
+        role: { [Op.ne]: 'pending' },
+        faceDescriptor: { [Op.ne]: null }
       }
+    })
+    const templates = users
+      .map((user) => ({ user, template: decryptTemplate(user.faceDescriptor, user.id) }))
+      .filter(({ template }) => template)
+    const match = findConsistentFaceMatch(descriptors, templates, qualities)
+    if (!match) {
+      await audit.update({ outcome: 'rejected', templateCount: templates.length })
+      return res.status(404).json({ status: 'not_found', message: 'Face could not be matched confidently' })
     }
 
-    if (!best || bestDist > VERIFY_THRESHOLD) {
-      console.log(`[FaceVerify] No match. Best distance: ${bestDist?.toFixed(3) ?? 'N/A'}`)
-      return res.status(404).json({ status: 'not_found', message: 'Face not recognized' })
-    }
-
-    // Confidence gap check: prevent ambiguous matches between similar-looking people
-    if (second && (secondDist - bestDist) < CONFIDENCE_GAP) {
-      console.log(`[FaceVerify] Ambiguous match. Best: ${bestDist.toFixed(3)} (${best.name}), Second: ${secondDist.toFixed(3)} (${second.name}), Gap: ${(secondDist - bestDist).toFixed(3)}`)
-      return res.status(404).json({ status: 'ambiguous', message: 'Recognition confidence too low. Adjust position and try again.' })
-    }
-
+    const { user: best } = match
+    await audit.update({ subjectId: best.id, outcome: 'matched', templateCount: templates.length })
     if (!best.userId) {
-      return res.status(400).json({ message: 'User has no valid userId assigned' })
+      return res.status(400).json({ message: 'User does not have a valid userId' })
     }
-
-    console.log(`[FaceVerify] Matched: ${best.name} | Distance: ${bestDist.toFixed(3)} | Gap: ${second ? (secondDist - bestDist).toFixed(3) : 'N/A (sole user)'}`)
 
     const { now, date, time } = nowIST()
     const existing = await Attendance.findOne({ where: { userId: best.id, date } })
-    if (existing) {
-      return res.json({ status: 'already_marked', user: { id: best.id, name: best.name, userId: best.userId }, distance: bestDist })
+    if (!existing) {
+      await Attendance.create({
+        userId: best.id,
+        userIdText: best.userId,
+        name: best.name,
+        role: best.role,
+        method: 'face',
+        status: 'present',
+        timestamp: now,
+        date,
+        time
+      })
     }
 
-    await Attendance.create({
-      userId: best.id,
-      userIdText: best.userId,
-      name: best.name,
-      role: best.role,
-      method: 'face',
-      status: 'present',
-      timestamp: now,
-      date,
-      time
-    })
-
-    return res.json({ status: 'marked', user: { id: best.id, name: best.name, userId: best.userId }, distance: bestDist })
+    return res.json({ status: existing ? 'already_marked' : 'marked', user: { id: best.id, name: best.name, userId: best.userId } })
   } catch (err) {
-    console.error('[FaceVerify] Error:', err.message)
-    return res.status(500).json({ message: 'Server error', error: err.message })
+    if (audit?.outcome === 'started') await audit.update({ outcome: 'error' }).catch(() => {})
+    console.error('Face verification failed:', err.name)
+    return res.status(500).json({ message: 'Face verification is unavailable. Try barcode attendance.' })
   }
 })
 
-// ─── Enrollment by Admin/Teacher for a specific target user ──────────────────
-router.post('/face/enroll/:targetUserId', requireAuth, requireRole('admin', 'teacher'), async (req, res) => {
+function assignedIds(user) {
+  return (user?.assignedStudents || []).map((value) => Number(value?.id ?? value)).filter(Number.isSafeInteger)
+}
+
+function canManageEnrollment(actor, target) {
+  return actor?.role === 'admin' || (actor?.role === 'teacher' &&
+    target.role === 'student' && assignedIds(actor).includes(target.id))
+}
+
+router.post('/face/enroll/:targetUserId', ...staffOnly, async (req, res) => {
   try {
     const { descriptors } = req.body
-    if (!Array.isArray(descriptors) || descriptors.length < 5) {
-      return res.status(400).json({ message: 'Provide at least 5 face descriptors' })
+    if (!Array.isArray(descriptors) || descriptors.length < 5 || descriptors.length > 12 || !descriptors.every(isFaceDescriptor)) {
+      return res.status(400).json({ message: 'Provide 5 to 12 valid face samples' })
     }
-
-    const validDescriptors = descriptors.filter(validateDescriptor)
-    if (validDescriptors.length < 5) {
-      return res.status(400).json({ message: 'Too many invalid descriptors. Recapture the face.' })
-    }
-
-    const target = await User.findByPk(req.params.targetUserId)
-    if (!target) return res.status(404).json({ message: 'Target user not found' })
-    if (target.role === 'pending') return res.status(403).json({ message: 'Cannot enroll a pending user. Assign a role first.' })
-
-    // Teachers may only enroll their assigned students
-    if (req.user.role === 'teacher') {
-      const teacher = await User.findByPk(req.user.id)
-      const assigned = (teacher?.assignedStudents || []).map(String)
-      if (!assigned.includes(String(target.id))) {
-        return res.status(403).json({ message: 'You may only enroll faces for your assigned students' })
-      }
-    }
-
-    const averaged = averageDescriptors(validDescriptors)
-    if (!averaged) return res.status(400).json({ message: 'Could not compute a valid descriptor. Recapture the face.' })
-
-    // Duplicate check against all OTHER enrolled users
-    const others = await User.findAll({
-      where: { id: { [Op.ne]: target.id }, role: { [Op.ne]: 'pending' } }
-    })
-    for (const other of others) {
-      if (!validateDescriptor(other.faceDescriptor)) continue
-      const dist = euclideanDistance(averaged, other.faceDescriptor)
-      if (dist <= ENROLL_DUPLICATE_THRESHOLD) {
-        console.log(`[Enrollment] Duplicate detected. New face matches ${other.name} at distance ${dist.toFixed(3)}`)
-        return res.status(409).json({
-          status: 'already_enrolled',
-          message: `Face already enrolled. This face matches an existing account.`
-        })
-      }
-    }
-
-    await target.update({ faceDescriptor: averaged })
-    console.log(`[Enrollment] Face enrolled successfully for ${target.name} (ID: ${target.id}) by ${req.user.role} ${req.user.name}`)
-    return res.status(201).json({ message: `Face enrolled successfully for ${target.name}.` })
-  } catch (err) {
-    console.error('[Enrollment] Error:', err.message)
-    return res.status(500).json({ message: 'Server error', error: err.message })
-  }
-})
-
-// ─── Reset face enrollment (Admin/Teacher) ───────────────────────────────────
-router.delete('/face/enroll/:userId', requireAuth, requireRole('admin', 'teacher'), async (req, res) => {
-  try {
-    const target = await User.findByPk(req.params.userId)
-    if (!target) return res.status(404).json({ message: 'User not found' })
-
-    if (req.user.role === 'teacher') {
-      const teacher = await User.findByPk(req.user.id)
-      const assigned = (teacher?.assignedStudents || []).map(String)
-      if (!assigned.includes(String(target.id))) {
-        return res.status(403).json({ message: 'You may only reset face enrollment for your assigned students' })
-      }
-    }
-
-    await target.update({ faceDescriptor: null })
-    console.log(`[EnrollReset] Face enrollment cleared for ${target.name} by ${req.user.role} ${req.user.name}`)
-    return res.json({ message: `Face enrollment reset for ${target.name}` })
-  } catch (err) {
-    console.error('[EnrollReset] Error:', err.message)
-    return res.status(500).json({ message: 'Server error', error: err.message })
-  }
-})
-
-// ─── List enrolled descriptors (Admin/Teacher — for debugging) ───────────────
-router.get('/face/descriptors', requireAuth, requireRole('admin', 'teacher'), async (req, res) => {
-  try {
-    const users = await User.findAll({
-      where: { role: { [Op.ne]: 'pending' } },
-      attributes: ['id', 'name', 'userId', 'role', 'faceDescriptor']
-    })
-    return res.json(users.filter(u => validateDescriptor(u.faceDescriptor)))
-  } catch (err) {
-    console.error('[FaceDescriptors] Error:', err.message)
-    return res.status(500).json({ message: 'Server error', error: err.message })
-  }
-})
-
-// ─── Students visible to caller (Admin = all, Teacher = assigned) ─────────────
-router.get('/my-students', requireAuth, requireRole('admin', 'teacher'), async (req, res) => {
-  try {
-    let students
-    if (req.user.role === 'admin') {
-      students = await User.findAll({
-        where: { role: 'student' },
-        attributes: ['id', 'name', 'email', 'userId', 'faceDescriptor']
+    const template = averageDescriptors(descriptors)
+    const outcome = await sequelize.transaction(async (transaction) => {
+      // Serialize staff enrollment against the same roster so concurrent requests cannot both enroll a duplicate.
+      const roster = await User.unscoped().findAll({
+        attributes: ['id', 'role', 'assignedStudents'],
+        order: [['id', 'ASC']], transaction, lock: true
       })
-    } else {
-      const teacher = await User.findByPk(req.user.id)
-      const assigned = teacher?.assignedStudents || []
-      if (assigned.length === 0) return res.json([])
-      students = await User.findAll({
-        where: { id: { [Op.in]: assigned }, role: 'student' },
-        attributes: ['id', 'name', 'email', 'userId', 'faceDescriptor']
+      const actor = roster.find((user) => user.id === req.user.id)
+      const target = roster.find((user) => String(user.id) === req.params.targetUserId)
+      if (!target) return { code: 404, message: 'Target user not found' }
+      if (target.role === 'pending' || !canManageEnrollment(actor, target)) {
+        return { code: 403, message: 'Enrollment is limited to approved accounts within your access' }
+      }
+      const candidates = await User.unscoped().findAll({
+        attributes: ['id', 'faceDescriptor'],
+        where: { id: { [Op.ne]: target.id }, role: { [Op.ne]: 'pending' }, faceDescriptor: { [Op.ne]: null } },
+        transaction
       })
-    }
-    return res.json(students.map(s => ({
-      id: s.id,
-      name: s.name,
-      email: s.email,
-      userId: s.userId,
-      hasFace: validateDescriptor(s.faceDescriptor)
+      const duplicate = candidates.some((user) => {
+        const existing = decryptTemplate(user.faceDescriptor, user.id)
+        return existing && euclideanDistance(template, existing) <= 0.45
+      })
+      await BiometricAudit.create({
+        action: 'enrollment', actorId: actor.id, subjectId: target.id, templateCount: candidates.length,
+        outcome: duplicate ? 'duplicate' : 'encrypted'
+      }, { transaction })
+      if (duplicate) return { code: 409, message: 'Face already enrolled for another account' }
+      await target.update({ faceDescriptor: encryptTemplate(template, target.id) }, { transaction })
+      return { code: 201, message: 'Face enrolled successfully' }
+    })
+    return res.status(outcome.code).json({ message: outcome.message })
+  } catch (err) {
+    console.error('Face enrollment failed:', err.name)
+    return res.status(500).json({ message: 'Face enrollment is unavailable' })
+  }
+})
+
+router.delete('/face/enroll/:userId', ...staffOnly, async (req, res) => {
+  try {
+    const outcome = await sequelize.transaction(async (transaction) => {
+      const actor = await User.findByPk(req.user.id, { transaction })
+      const target = await User.findByPk(req.params.userId, { transaction, lock: true })
+      if (!target) return 404
+      if (!canManageEnrollment(actor, target)) return 403
+      await target.update({ faceDescriptor: null }, { transaction })
+      await BiometricAudit.create({ action: 'reset', actorId: actor.id, subjectId: target.id, outcome: 'deleted' }, { transaction })
+      return 200
+    })
+    return res.status(outcome).json({ message: outcome === 200 ? 'Face enrollment reset' : 'Face reset is unavailable for this account' })
+  } catch (err) {
+    console.error('Face reset failed:', err.name)
+    return res.status(500).json({ message: 'Face reset is unavailable' })
+  }
+})
+
+router.get('/my-students', ...staffOnly, async (req, res) => {
+  try {
+    const viewer = await User.findByPk(req.user.id, { attributes: ['role', 'assignedStudents'] })
+    if (!['admin', 'teacher'].includes(viewer?.role)) return res.status(403).json({ message: 'Student access denied' })
+    const where = viewer.role === 'admin' ? { role: 'student' } : { role: 'student', id: { [Op.in]: assignedIds(viewer) } }
+    const students = await User.unscoped().findAll({
+      where, attributes: ['id', 'name', 'email', 'userId', ...templateStatusFields]
+    })
+    res.set('Cache-Control', 'private, no-store')
+    return res.json(students.map((student) => ({
+      id: student.id, name: student.name, email: student.email, userId: student.userId, hasFace: hasTemplateForUser(student)
     })))
   } catch (err) {
-    console.error('[MyStudents] Error:', err.message)
-    return res.status(500).json({ message: 'Server error', error: err.message })
+    console.error('Student enrollment status failed:', err.name)
+    return res.status(500).json({ message: 'Student enrollment status is unavailable' })
   }
 })
 
-// ─── Barcode / manual ID attendance (public) ─────────────────────────────────
-router.post('/barcode', async (req, res) => {
+router.post('/barcode', ...kioskAccess, async (req, res) => {
   try {
     const { barcode } = req.body
     if (!barcode) return res.status(400).json({ message: 'Barcode required' })
@@ -239,15 +209,49 @@ router.post('/barcode', async (req, res) => {
   }
 })
 
-// ─── Attendance logs ──────────────────────────────────────────────────────────
+router.get('/reports', requireAuth, async (req, res) => {
+  try {
+    const viewer = await User.findByPk(req.user.id, { attributes: ['id', 'role', 'assignedStudents'] })
+    if (!viewer || !['student', 'teacher', 'admin'].includes(viewer.role)) return res.status(403).json({ message: 'Attendance report access denied' })
+    const target = attendanceTarget()
+    const window = reportWindow()
+    const roster = await User.findAll({
+      where: { role: 'student' },
+      attributes: ['id', 'name', 'userId', 'department', 'semester', 'section', 'createdAt'],
+      order: [['name', 'ASC'], ['id', 'ASC']]
+    })
+    const assigned = new Set(assignedIds(viewer))
+    const students = roster.filter((student) => viewer.role === 'admin' ||
+      (viewer.role === 'teacher' ? assigned.has(student.id) : viewer.id === student.id))
+    const cohorts = new Set(students.map(cohortKey).filter(Boolean))
+    const studentIds = new Set(students.map((student) => student.id))
+    const cohortMembers = roster.filter((student) => studentIds.has(student.id) || cohorts.has(cohortKey(student)))
+    const records = cohortMembers.length ? await Attendance.findAll({
+      attributes: ['userId', 'date'],
+      where: { userId: { [Op.in]: cohortMembers.map((student) => student.id) }, date: { [Op.gte]: window.start, [Op.lt]: window.before } },
+      raw: true
+    }) : []
+    res.set('Cache-Control', 'private, no-store')
+    return res.json({ target, window, students: buildAttendanceReports(students, cohortMembers, records, target) })
+  } catch (err) {
+    console.error('Attendance reports failed:', err.name)
+    return res.status(500).json({ message: 'Attendance reports are unavailable' })
+  }
+})
+
 router.get('/logs', requireAuth, async (req, res) => {
   try {
     const user = await User.findByPk(req.user.id)
     if (!user) return res.status(404).json({ message: 'User not found' })
 
     let whereClause = {}
-    if (user.role === 'student') whereClause = { userId: user.id }
-    if (user.role === 'teacher') whereClause = { userId: { [Op.in]: user.assignedStudents || [] } }
+    if (user.role === 'student') {
+      whereClause = { userId: user.id }
+    }
+    if (user.role === 'teacher') {
+      const assigned = assignedIds(user)
+      whereClause = { userId: { [Op.in]: assigned } }
+    }
 
     const logs = await Attendance.findAll({
       where: whereClause,
@@ -256,7 +260,6 @@ router.get('/logs', requireAuth, async (req, res) => {
     })
     return res.json(logs)
   } catch (err) {
-    console.error('[Logs] Error:', err.message)
     return res.status(500).json({ message: 'Server error', error: err.message })
   }
 })
