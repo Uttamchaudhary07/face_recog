@@ -1,5 +1,6 @@
 import express from 'express'
 import bcrypt from 'bcryptjs'
+import { UniqueConstraintError } from 'sequelize'
 import { User, normalizeUsn, isDuplicateUsn } from '../models/User.js'
 import { Attendance } from '../models/Attendance.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
@@ -110,11 +111,20 @@ router.post('/users', async (req, res) => {
       barcode: barcode ? barcode.trim().toUpperCase() : undefined,
       ...details.values
     })
-    console.log(`[AdminCreateUser] Created ${role} "${name}" (${email})`)
-    return res.status(201).json({ id: user.id, name: user.name, email: user.email, role: user.role, userId: user.userId, department: user.department, semester: user.semester, section: user.section })
+    return res.status(201).json({
+      id: user.id, name: user.name, email: user.email, role: user.role,
+      userId: user.userId, barcode: user.barcode, department: user.department,
+      semester: user.semester, section: user.section, hasFace: false
+    })
   } catch (err) {
     if (isDuplicateUsn(err)) return res.status(409).json({ message: 'USN already registered' })
-    return res.status(500).json({ message: 'Server error', error: err.message })
+    if (err instanceof UniqueConstraintError) {
+      if (Object.hasOwn(err.fields, 'email')) return res.status(409).json({ message: 'Email already registered' })
+      if (Object.hasOwn(err.fields, 'barcode')) return res.status(409).json({ message: 'Barcode already registered' })
+      return res.status(409).json({ message: 'An account with these details already exists' })
+    }
+    console.error('Could not create user:', err.name, err.original?.code)
+    return res.status(500).json({ message: 'Could not create the user. Try again.' })
   }
 })
 
