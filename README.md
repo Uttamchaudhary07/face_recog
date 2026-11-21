@@ -6,11 +6,11 @@ A web app for recording student attendance with a webcam, a barcode, or a univer
 
 | Role | What you can do |
 | --- | --- |
-| Admin | Create accounts individually or by CSV, assign students to teachers, manage face enrollments, export attendance, and review biometric audit events. |
-| Teacher | View and export attendance for assigned students, enroll or reset their face templates, and see alerts for low or declining attendance. |
+| Admin | Create accounts individually or by CSV, assign students to teachers, manage face enrollments, review below-target attendance, export check-in logs, and review biometric audit events. |
+| Teacher | View below-target attendance and export check-in logs for assigned students. Enroll or reset their face templates. |
 | Student | Sign in with an account created by an admin, view your own attendance, and download your report. |
 
-Students can mark attendance from the home page without signing in. Enter the session code shared by staff, then use face recognition, barcode, or USN. Face recognition guides the student through a short head turn, checks lighting, blur, face size, and angle, and rejects uncertain matches. MySQL stores one check-in per student per session, so students can attend multiple subjects on the same day. Daily attendance reports still count each date once and display times in India Standard Time.
+Students can mark attendance from the home page without signing in. Enter the session code shared by staff, then use face recognition, barcode, or USN. Face recognition guides the student through a short head turn, checks lighting, blur, face size, and angle, and rejects uncertain matches. MySQL stores one check-in per student per session, so students can attend multiple subjects on the same day. Reports count sessions individually and display dates in India Standard Time.
 
 Teachers start and close sessions for their assigned subjects from **Attendance Sessions**. Admins can start sessions for any subject, close any session, and assign subjects using **Edit Subjects** on a teacher's account. A session starts immediately and closes at the end of its chosen duration unless staff close it early.
 
@@ -78,7 +78,7 @@ Use the teacher's **Assign Students** action to upload a CSV with a `userid` col
 
 ## Reports and biometric privacy
 
-- **Reports and alerts.** The default attendance target is 75%. Forecasts use up to 90 days of history and appear after five observed days. Dates are inferred from check-ins within a department, semester, and section. A day with zero cohort check-ins cannot be identified as a class day.
+- **Reports and alerts.** Students see a full report for the last 90 calendar days, including today. Check-ins count immediately. A missed session counts after it closes, for all students who had accounts when an admin opened it or for students currently assigned to the teacher who opened it. Check-ins from before sessions were introduced are available in the logs. Staff see which students are below the attendance target (75% by default). Student forecasts appear after five counted sessions.
 - **Biometric templates.** Face templates are encrypted with AES-256-GCM and used by the backend for matching. The admin dashboard shows enrollment, verification, reset, migration, and expiry events.
 - **Retention.** The default is 180 days. Change `BIOMETRIC_RETENTION_DAYS` and `ATTENDANCE_TARGET_PERCENT` in the backend environment. Keep local environment files, student CSVs, exports, and database backups out of Git.
 
