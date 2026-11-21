@@ -84,4 +84,4 @@ Use the teacher's **Assign Students** action to upload a CSV with a `userid` col
 
 ## Deploy to Vercel
 
-The frontend is a Vite project and the backend is an Express project. They use a hosted MySQL database. Follow the [Vercel deployment guide](./MYSQL_DEPLOYMENT.md) for project setup, TLS, environment variables, database provisioning, and the retention job.
+One Vercel project serves the Vite frontend and the Express API on the same domain. The API connects to hosted MySQL. Follow the [Vercel deployment guide](./MYSQL_DEPLOYMENT.md) for project setup, TLS, environment variables, database provisioning, and the retention job.
