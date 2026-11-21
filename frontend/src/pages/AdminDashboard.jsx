@@ -40,6 +40,8 @@ export default function AdminDashboard() {
 
   const [createOpen, setCreateOpen] = useState(false)
   const [createForm, setCreateForm] = useState({ name: '', email: '', password: '', role: 'student', userId: '' })
+  const [createError, setCreateError] = useState('')
+  const [creatingUser, setCreatingUser] = useState(false)
 
   const [actionUser, setActionUser] = useState(null)
   const [actionType, setActionType] = useState('')
@@ -256,13 +258,20 @@ export default function AdminDashboard() {
   }
 
   async function createUser(e) {
-    e.preventDefault(); setError(''); setMessage('')
+    e.preventDefault()
+    if (creatingUser) return
+    setCreatingUser(true)
+    setCreateError('')
     try {
-      await adminCreateUser(createForm)
+      const user = await adminCreateUser(createForm)
+      setUsers(current => [...current.filter(existing => existing.id !== user.id), user])
       setCreateForm({ name: '', email: '', password: '', role: 'student', userId: '' })
-      setCreateOpen(false); setMessage('User created'); await load()
+      setCreateOpen(false)
+      setMessage('User created')
     } catch (err) {
-      setError(err.response?.data?.message || 'Create failed')
+      setCreateError(err.response?.data?.message || 'Could not create the user. Try again.')
+    } finally {
+      setCreatingUser(false)
     }
   }
 
@@ -366,7 +375,12 @@ export default function AdminDashboard() {
             <button className="btn btn--ghost" onClick={() => { setCsvOpen(v => !v); setCsvResult(null) }}>
               CSV Import
             </button>
-            <button className="btn" onClick={() => setCreateOpen(true)}>Create User</button>
+            <button className="btn" onClick={() => {
+              setError('')
+              setMessage('')
+              setCreateError('')
+              setCreateOpen(true)
+            }}>Create User</button>
           </div>
         </div>
         {error && <div className="error">{error}</div>}
@@ -564,7 +578,7 @@ export default function AdminDashboard() {
 
       {/* ── Create User Modal ── */}
       {createOpen && (
-        <Modal title="Create User" onClose={() => setCreateOpen(false)}>
+        <Modal title="Create User" onClose={() => { if (!creatingUser) setCreateOpen(false) }}>
           <form onSubmit={createUser} className="form grid-2">
             <label>Name<input value={createForm.name} onChange={e => setCreateForm({ ...createForm, name: e.target.value })} required /></label>
             <label>Email<input type="email" value={createForm.email} onChange={e => setCreateForm({ ...createForm, email: e.target.value })} required /></label>
@@ -582,10 +596,10 @@ export default function AdminDashboard() {
                 setCreateForm((form) => ({ ...form, [field]: value }))
               }} />
             )}
-            {error && <div className="error" role="alert">{error}</div>}
+            {createError && <div className="error" role="alert">{createError}</div>}
             <div className="modal__actions">
-              <button type="button" className="btn btn--ghost" onClick={() => setCreateOpen(false)}>Cancel</button>
-              <button className="btn">Create</button>
+              <button type="button" className="btn btn--ghost" disabled={creatingUser} onClick={() => setCreateOpen(false)}>Cancel</button>
+              <button type="submit" className="btn" disabled={creatingUser}>{creatingUser ? 'Creating…' : 'Create'}</button>
             </div>
           </form>
         </Modal>
