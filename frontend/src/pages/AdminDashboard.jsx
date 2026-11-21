@@ -1,6 +1,7 @@
 import StudentFields from '../components/StudentFields.jsx'
 import AttendanceReports from '../components/AttendanceReports.jsx'
 import BiometricAudit from '../components/BiometricAudit.jsx'
+import AttendanceSessions from '../components/AttendanceSessions.jsx'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import jsQR from 'jsqr'
 import {
@@ -113,10 +114,10 @@ export default function AdminDashboard() {
   const stats = useMemo(() => {
     const today = todayIST()
     const workingDays = new Set(logs.map(l => l.date)).size
-    const studentLogs = logs.filter(l => l.role === 'student')
+    const studentDays = new Set(logs.filter(l => l.role === 'student').map(log => `${log.userId}:${log.date}`))
     const studentCount = users.filter(u => u.role === 'student').length
     const avgPct = workingDays > 0 && studentCount > 0
-      ? Math.round((studentLogs.length / (studentCount * workingDays)) * 100)
+      ? Math.round((studentDays.size / (studentCount * workingDays)) * 100)
       : 0
     return {
       total: users.length,
@@ -176,19 +177,20 @@ export default function AdminDashboard() {
           userId: log.userIdText || '-',
           email: userByUserId[log.userIdText]?.email || '-',
           role: log.role,
-          presentDays: 0,
+          presentDates: new Set(),
           lastDate: log.date,
           lastTime: log.time
         }
       }
-      byStudent[key].presentDays++
+      byStudent[key].presentDates.add(log.date)
     }
 
     const headers = ['Name', 'User ID', 'Email', 'Role', 'Present Days', 'Absent Days', 'Attendance %', 'Last Attendance (IST)']
     const rows = Object.values(byStudent).map(s => {
-      const absent = Math.max(0, workingDays - s.presentDays)
-      const pct = ((s.presentDays / workingDays) * 100).toFixed(1)
-      return [s.name, s.userId, s.email, s.role, s.presentDays, absent, `${pct}%`, `${s.lastDate} ${s.lastTime}`]
+      const presentDays = s.presentDates.size
+      const absent = Math.max(0, workingDays - presentDays)
+      const pct = ((presentDays / workingDays) * 100).toFixed(1)
+      return [s.name, s.userId, s.email, s.role, presentDays, absent, `${pct}%`, `${s.lastDate} ${s.lastTime}`]
     })
 
     downloadCsv(`attendance_${label}_${today}.csv`, rows, headers)
@@ -371,6 +373,8 @@ export default function AdminDashboard() {
         {message && <div className="success">{message}</div>}
       </div>
 
+      <AttendanceSessions admin />
+
       {/* ── CSV Import Panel ── */}
       {csvOpen && (
         <div className="card">
@@ -473,7 +477,10 @@ export default function AdminDashboard() {
                     <button onClick={() => { setActionUser(user); setActionType('barcode'); setActionValue(user.barcode || ''); setActionOpenId(null) }}>Scan Barcode</button>
                     <button onClick={() => { setActionUser(user); setActionType('password'); setActionValue(''); setActionOpenId(null) }}>Set Password</button>
                     {user.role === 'teacher' && (
-                      <button onClick={() => { setActionUser(user); setActionType('assign'); setAssignResult(null); setActionOpenId(null) }}>Assign Students</button>
+                      <>
+                        <button onClick={() => { setActionUser(user); setActionType('assign'); setAssignResult(null); setActionOpenId(null) }}>Assign Students</button>
+                        <button onClick={() => { setActionUser(user); setActionType('subjects'); setActionValue((user.subjects || []).join(', ')); setActionOpenId(null) }}>Edit Subjects</button>
+                      </>
                     )}
                     <button onClick={() => { setActionUser(user); setActionType('view'); setActionOpenId(null) }}>View IDs</button>
                     <button onClick={() => deleteUser(user)} style={{ color: '#dc2626' }}>Delete User</button>
@@ -527,7 +534,10 @@ export default function AdminDashboard() {
                 <div className="cell-meta">{log.userIdText || '-'}</div>
               </span>
               <span className="pill pill--neutral">{log.role}</span>
-              <span className="pill pill--info">{log.method}</span>
+              <span>
+                <span className="pill pill--info">{log.method}</span>
+                {log.session && <div className="cell-meta">{log.session.subject}</div>}
+              </span>
               <span>{log.date}</span>
               <span>{log.time}</span>
             </div>
@@ -652,6 +662,19 @@ export default function AdminDashboard() {
                 <button className="btn" onClick={() => updateUser(actionUser.id, { password: actionValue })}>Set Password</button>
               </div>
             </div>
+          )}
+          {actionType === 'subjects' && (
+            <form className="form" onSubmit={e => {
+              e.preventDefault()
+              const subjects = [...new Set(actionValue.split(',').map(subject => subject.trim()).filter(Boolean))]
+              updateUser(actionUser.id, { subjects })
+            }}>
+              <label>
+                Teaching subjects (comma separated)
+                <input value={actionValue} onChange={e => setActionValue(e.target.value)} placeholder="Mathematics, Physics" />
+              </label>
+              <button className="btn">Save Subjects</button>
+            </form>
           )}
           {actionType === 'assign' && (
             <div className="stack">

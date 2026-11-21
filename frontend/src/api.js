@@ -58,13 +58,28 @@ export async function adminCsvImport(csvText){
 }
 
 // ─── Attendance ───────────────────────────────────────────────────────────────
-export async function markByFace(descriptors, qualities){
-  const res = await api.post('/attendance/face/verify', { descriptors, qualities })
+export async function getAttendanceSessions(){
+  const res = await api.get('/attendance/sessions')
   return res.data
 }
 
-export async function markByBarcode(barcode){
-  const res = await api.post('/attendance/barcode', { barcode })
+export async function startAttendanceSession(subject, durationMinutes){
+  const res = await api.post('/attendance/sessions', { subject, durationMinutes })
+  return res.data
+}
+
+export async function closeAttendanceSession(id){
+  const res = await api.patch(`/attendance/sessions/${id}/close`)
+  return res.data
+}
+
+export async function markByFace(descriptors, qualities, sessionCode){
+  const res = await api.post('/attendance/face/verify', { descriptors, qualities, sessionCode })
+  return res.data
+}
+
+export async function markByBarcode(barcode, sessionCode){
+  const res = await api.post('/attendance/barcode', { barcode, sessionCode })
   return res.data
 }
 

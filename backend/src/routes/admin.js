@@ -200,7 +200,10 @@ router.get('/attendance', async (req, res) => {
     const logs = await Attendance.findAll({
       order: [['timestamp', 'DESC']],
       limit: 1000,
-      include: [{ model: User, as: 'user', attributes: ['id', 'name', 'userId', 'email'] }]
+      include: [
+        { model: User, as: 'user', attributes: ['id', 'name', 'userId', 'email'] },
+        { association: 'session', attributes: ['subject'] }
+      ]
     })
     return res.json(logs)
   } catch (err) {

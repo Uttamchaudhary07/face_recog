@@ -49,7 +49,10 @@ export default function StudentDashboard(){
             <div key={log.id} className="table__row">
               <span>{log.date}</span>
               <span>{log.time}</span>
-              <span className="pill pill--info">{log.method}</span>
+              <span>
+                <span className="pill pill--info">{log.method}</span>
+                {log.session && <div className="cell-meta">{log.session.subject}</div>}
+              </span>
             </div>
           ))}
         </div>
