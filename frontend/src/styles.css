@@ -368,3 +368,41 @@ video {
   .action-cell { justify-content: flex-start; }
   .nav { padding: 1rem; flex-direction: column; gap: 1rem; }
 }
+
+.dashboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+nav.dashboard-actions {
+  margin-bottom: 1rem;
+}
+
+.attendance-report-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+
+.attendance-report-metrics dt {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.attendance-report-metrics dd {
+  margin: 0.3rem 0 0;
+  font-weight: 700;
+}
+
+.attendance-alert-list {
+  margin-bottom: 0;
+}
+
+.table--session-history {
+  margin-bottom: 1rem;
+}
+
+.table--session-history .table__row {
+  grid-template-columns: minmax(0, 2fr) minmax(85px, 1fr) minmax(55px, 1fr);
+}

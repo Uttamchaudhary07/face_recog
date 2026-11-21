@@ -9,7 +9,7 @@ import { sequelize } from '../db.js'
 import { BiometricAudit } from '../models/BiometricAudit.js'
 import { decryptTemplate, encryptTemplate, hasTemplateForUser, templateStatusFields } from '../utils/biometrics.js'
 import { nowIST } from '../utils/date.js'
-import { attendanceTarget, buildAttendanceReports, cohortKey, reportWindow } from '../utils/attendanceReports.js'
+import { assignedIds, attendanceTarget, buildAttendanceReports, reportWindow } from '../utils/attendanceReports.js'
 
 const router = express.Router()
 const staffOnly = [requireAuth, requireRole('admin', 'teacher')]
@@ -103,10 +103,6 @@ router.post('/face/verify', requireOpenSession, async (req, res) => {
     return res.status(500).json({ message: 'Face verification is unavailable. Try barcode attendance.' })
   }
 })
-
-function assignedIds(user) {
-  return (user?.assignedStudents || []).map((value) => Number(value?.id ?? value)).filter(Number.isSafeInteger)
-}
 
 function canManageEnrollment(actor, target) {
   return actor?.role === 'admin' || (actor?.role === 'teacher' &&
@@ -215,25 +211,43 @@ router.get('/reports', requireAuth, async (req, res) => {
     const viewer = await User.findByPk(req.user.id, { attributes: ['id', 'role', 'assignedStudents'] })
     if (!viewer || !['student', 'teacher', 'admin'].includes(viewer.role)) return res.status(403).json({ message: 'Attendance report access denied' })
     const target = attendanceTarget()
-    const window = reportWindow()
-    const roster = await User.findAll({
-      where: { role: 'student' },
-      attributes: ['id', 'name', 'userId', 'department', 'semester', 'section', 'createdAt'],
-      order: [['name', 'ASC'], ['id', 'ASC']]
+    const now = new Date()
+    const window = reportWindow(now)
+    const detailed = viewer.role === 'student'
+    const where = { role: 'student' }
+    if (detailed) where.id = viewer.id
+    if (viewer.role === 'teacher') where.id = { [Op.in]: assignedIds(viewer) }
+
+    const students = await User.findAll({
+      where, attributes: ['id', 'name', 'userId', 'createdAt'],
+      order: [['name', 'ASC'], ['id', 'ASC']], raw: true
     })
-    const assigned = new Set(assignedIds(viewer))
-    const students = roster.filter((student) => viewer.role === 'admin' ||
-      (viewer.role === 'teacher' ? assigned.has(student.id) : viewer.id === student.id))
-    const cohorts = new Set(students.map(cohortKey).filter(Boolean))
-    const studentIds = new Set(students.map((student) => student.id))
-    const cohortMembers = roster.filter((student) => studentIds.has(student.id) || cohorts.has(cohortKey(student)))
-    const records = cohortMembers.length ? await Attendance.findAll({
-      attributes: ['userId', 'date'],
-      where: { userId: { [Op.in]: cohortMembers.map((student) => student.id) }, date: { [Op.gte]: window.start, [Op.lt]: window.before } },
-      raw: true
-    }) : []
     res.set('Cache-Control', 'private, no-store')
-    return res.json({ target, window, students: buildAttendanceReports(students, cohortMembers, records, target) })
+    if (!students.length) return res.json({ target, window, students: [] })
+
+    const [sessions, records] = await Promise.all([
+      AttendanceSession.findAll({
+        where: { createdAt: { [Op.between]: [new Date(window.start + 'T00:00:00+05:30'), now] } },
+        attributes: ['id', 'subject', 'createdBy', 'createdAt', 'expiresAt'],
+        order: [['createdAt', 'ASC'], ['id', 'ASC']], raw: true
+      }),
+      Attendance.findAll({
+        where: {
+          userId: { [Op.in]: students.map(student => student.id) },
+          sessionId: { [Op.ne]: null }, date: { [Op.gte]: window.start }
+        },
+        attributes: ['userId', 'sessionId'], raw: true
+      })
+    ])
+    const creators = await User.findAll({
+      where: { id: { [Op.in]: [...new Set(sessions.map(session => session.createdBy))] } },
+      attributes: ['id', 'role', 'assignedStudents']
+    })
+    for (const session of sessions) session.date = nowIST(session.createdAt).date
+    return res.json({
+      target, window,
+      students: buildAttendanceReports(students, sessions, creators, records, { target, now, detailed })
+    })
   } catch (err) {
     console.error('Attendance reports failed:', err.name)
     return res.status(500).json({ message: 'Attendance reports are unavailable' })

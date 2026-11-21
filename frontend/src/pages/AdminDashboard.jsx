@@ -9,27 +9,10 @@ import {
   adminAttendance, adminCsvImport, resetFaceEnrollment, assignStudentsCsv
 } from '../api'
 import FaceEnrollModal from '../components/FaceEnrollModal.jsx'
-
-// ─── CSV Download Utility ─────────────────────────────────────────────────────
-function downloadCsv(filename, rows, headers) {
-  const escape = v => `"${String(v ?? '').replace(/"/g, '""')}"`
-  const lines = [headers.map(escape).join(','), ...rows.map(r => r.map(escape).join(','))]
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-function todayIST() {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
-}
+import { exportAttendanceLogs } from '../utils/attendanceCsv.js'
 
 export default function AdminDashboard() {
+  const [panel, setPanel] = useState('Users')
   const [users, setUsers] = useState([])
   const [logs, setLogs] = useState([])
   const [error, setError] = useState('')
@@ -78,15 +61,21 @@ export default function AdminDashboard() {
 
   async function load() {
     try {
-      const [userData, logData] = await Promise.all([adminListUsers(), adminAttendance()])
-      setUsers(userData)
-      setLogs(logData)
+      setUsers(await adminListUsers())
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to load data')
+      setError('Could not load users.')
     }
   }
 
   useEffect(() => { load() }, [])
+
+  useEffect(() => {
+    if (panel !== 'Attendance') return
+    let active = true
+    adminAttendance().then(data => { if (active) setLogs(data) })
+      .catch(() => { if (active) setError('Could not load the attendance logs.') })
+    return () => { active = false }
+  }, [panel])
 
   useEffect(() => {
     if ('BarcodeDetector' in window) {
@@ -112,26 +101,6 @@ export default function AdminDashboard() {
     return result
   }, [users, searchQuery, faceFilter])
 
-  // ─── Stats ────────────────────────────────────────────────────────────────
-  const stats = useMemo(() => {
-    const today = todayIST()
-    const workingDays = new Set(logs.map(l => l.date)).size
-    const studentDays = new Set(logs.filter(l => l.role === 'student').map(log => `${log.userId}:${log.date}`))
-    const studentCount = users.filter(u => u.role === 'student').length
-    const avgPct = workingDays > 0 && studentCount > 0
-      ? Math.round((studentDays.size / (studentCount * workingDays)) * 100)
-      : 0
-    return {
-      total: users.length,
-      students: studentCount,
-      teachers: users.filter(u => u.role === 'teacher').length,
-      pending: users.filter(u => u.role === 'pending').length,
-      enrolled: users.filter(u => u.hasFace).length,
-      todayCount: logs.filter(l => l.date === today).length,
-      avgPct
-    }
-  }, [users, logs])
-
   // ─── Filtered logs ────────────────────────────────────────────────────────
   const filteredLogs = useMemo(() => logs.filter(log => {
     if (logFilters.date && log.date !== logFilters.date) return false
@@ -144,58 +113,8 @@ export default function AdminDashboard() {
   const pagedLogs = filteredLogs.slice((logPage - 1) * PAGE_SIZE, logPage * PAGE_SIZE)
   useEffect(() => { if (logPage > totalPages) setLogPage(totalPages) }, [logPage, totalPages])
 
-  // ─── Export Attendance CSV ────────────────────────────────────────────────
   function exportAttendance(range) {
-    const today = todayIST()
-    let startDate = null
-    let label = 'all'
-
-    if (range === 'weekly') {
-      const d = new Date(); d.setDate(d.getDate() - 7)
-      startDate = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
-      label = 'weekly'
-    } else if (range === 'monthly') {
-      const d = new Date(); d.setDate(d.getDate() - 30)
-      startDate = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
-      label = 'monthly'
-    }
-
-    const filtered = startDate ? logs.filter(l => l.date >= startDate) : logs
-    if (filtered.length === 0) { setMessage('No attendance data for this period.'); return }
-
-    const workingDays = new Set(filtered.map(l => l.date)).size
-
-    // Build email lookup from users list
-    const userByUserId = {}
-    for (const u of users) { if (u.userId) userByUserId[u.userId] = u }
-
-    // Group by student
-    const byStudent = {}
-    for (const log of filtered) {
-      const key = log.userIdText || log.name
-      if (!byStudent[key]) {
-        byStudent[key] = {
-          name: log.name,
-          userId: log.userIdText || '-',
-          email: userByUserId[log.userIdText]?.email || '-',
-          role: log.role,
-          presentDates: new Set(),
-          lastDate: log.date,
-          lastTime: log.time
-        }
-      }
-      byStudent[key].presentDates.add(log.date)
-    }
-
-    const headers = ['Name', 'User ID', 'Email', 'Role', 'Present Days', 'Absent Days', 'Attendance %', 'Last Attendance (IST)']
-    const rows = Object.values(byStudent).map(s => {
-      const presentDays = s.presentDates.size
-      const absent = Math.max(0, workingDays - presentDays)
-      const pct = ((presentDays / workingDays) * 100).toFixed(1)
-      return [s.name, s.userId, s.email, s.role, presentDays, absent, `${pct}%`, `${s.lastDate} ${s.lastTime}`]
-    })
-
-    downloadCsv(`attendance_${label}_${today}.csv`, rows, headers)
+    if (!exportAttendanceLogs(logs, range)) setMessage('No check-ins to export for this period.')
   }
 
   // ─── User actions ─────────────────────────────────────────────────────────
@@ -367,11 +286,8 @@ export default function AdminDashboard() {
       {/* ── Header ── */}
       <div className="section">
         <div className="section__header">
-          <div>
-            <h2>Admin Dashboard</h2>
-            <p className="muted">Manage users, attendance, and face enrollments.</p>
-          </div>
-          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+          <h2>Admin Dashboard</h2>
+          {panel === 'Users' && <div className="dashboard-actions">
             <button className="btn btn--ghost" onClick={() => { setCsvOpen(v => !v); setCsvResult(null) }}>
               CSV Import
             </button>
@@ -381,16 +297,26 @@ export default function AdminDashboard() {
               setCreateError('')
               setCreateOpen(true)
             }}>Create User</button>
-          </div>
+          </div>}
         </div>
+        <nav className="dashboard-actions" aria-label="Admin dashboard sections">
+          {['Users', 'Sessions', 'Attendance', 'Biometric Audit'].map(section => (
+            <button key={section} type="button" aria-pressed={panel === section}
+              className={panel === section ? 'btn' : 'btn btn--ghost'}
+              onClick={() => { setPanel(section); setError(''); setMessage('') }}>
+              {section}
+            </button>
+          ))}
+        </nav>
         {error && <div className="error">{error}</div>}
         {message && <div className="success">{message}</div>}
       </div>
 
-      <AttendanceSessions admin />
+      {panel === 'Sessions' && <AttendanceSessions admin />}
+      {panel === 'Biometric Audit' && <BiometricAudit />}
 
       {/* ── CSV Import Panel ── */}
-      {csvOpen && (
+      {panel === 'Users' && csvOpen && (
         <div className="card">
           <h3>CSV Bulk Import</h3>
           <p className="muted">
@@ -417,29 +343,8 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* ── Overview Stats ── */}
-      <div className="section">
-        <div className="section__title"><h3>Overview</h3></div>
-        <div className="stats-grid">
-          {[
-            { label: 'Total Users', value: stats.total },
-            { label: 'Students', value: stats.students },
-            { label: 'Teachers', value: stats.teachers },
-            { label: 'Pending', value: stats.pending },
-            { label: 'Face Enrolled', value: stats.enrolled },
-            { label: "Today's Attendance", value: stats.todayCount },
-            { label: 'Avg Attendance', value: `${stats.avgPct}%` }
-          ].map(s => (
-            <div key={s.label} className="stat-card">
-              <div className="stat-label">{s.label}</div>
-              <div className="stat-value">{s.value}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {/* ── User Management ── */}
-      <div className="section">
+      {panel === 'Users' && <div className="section">
         <div className="section__title"><h3>User Management</h3></div>
         <div className="filters" style={{ marginBottom: '1rem' }}>
           <label>
@@ -504,18 +409,18 @@ export default function AdminDashboard() {
             </div>
           ))}
         </div>
-      </div>
+      </div>}
 
-      {/* ── Attendance Logs ── */}
-      <div className="section">
+      {panel === 'Attendance' && <div className="section">
+        <AttendanceReports faculty />
         <div className="section__header">
           <div>
             <h3>Attendance Logs</h3>
-            <p className="muted">All times in IST. Filter and export below.</p>
+            <p className="muted">Times shown in IST.</p>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <button className="btn btn--ghost" onClick={() => exportAttendance('weekly')}>Export Weekly</button>
-            <button className="btn btn--ghost" onClick={() => exportAttendance('monthly')}>Export Monthly</button>
+            <button className="btn btn--ghost" onClick={() => exportAttendance('weekly')}>Export 7 Days</button>
+            <button className="btn btn--ghost" onClick={() => exportAttendance('monthly')}>Export 30 Days</button>
             <button className="btn btn--ghost" onClick={() => exportAttendance('all')}>Export All</button>
           </div>
         </div>
@@ -562,10 +467,7 @@ export default function AdminDashboard() {
           <span className="muted">Page {logPage} of {totalPages}</span>
           <button className="btn btn--ghost" disabled={logPage === totalPages} onClick={() => setLogPage(p => p + 1)}>Next</button>
         </div>
-      </div>
-
-      <AttendanceReports faculty refreshKey={users} />
-      <BiometricAudit />
+      </div>}
 
       {/* ── Face Enrollment Modal ── */}
       {enrollTarget && (
